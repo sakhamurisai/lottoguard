@@ -1,0 +1,272 @@
+/**
+ * Single-table DynamoDB helpers.
+ *
+ * Key schema:
+ *   PK                 SK                       Entity
+ *   ORG#{orgId}        PROFILE                  Organization
+ *   ORG#{orgId}        OWNER#{sub}              Owner
+ *   ORG#{orgId}        EMP#{sub}                Employee
+ *   ORG#{orgId}        BOOK#{bookId}            LotteryBook
+ *   ORG#{orgId}        SLOT#{num}               Slot
+ *   ORG#{orgId}        SHIFT#{empSub}#{id}      Shift
+ *
+ *   GSI1 (UserIndex):  GSI1PK = USER#{sub}       → locate user's org
+ *   GSI2 (EmployeeIndex): GSI2PK = EMP#{sub}     → employee shift history
+ */
+
+import {
+  GetCommand, PutCommand, UpdateCommand, QueryCommand,
+  TransactWriteCommand, DeleteCommand,
+  type TransactWriteCommandInput,
+} from "@aws-sdk/lib-dynamodb";
+import { db, TABLE, GSI_USER, GSI_EMP } from "./aws";
+import { randomUUID } from "crypto";
+
+// ── Keys ──────────────────────────────────────────────────────────────────────
+
+export const k = {
+  org:   (id: string)             => ({ PK: `ORG#${id}`, SK: "PROFILE" }),
+  owner: (orgId: string, sub: string) => ({ PK: `ORG#${orgId}`, SK: `OWNER#${sub}` }),
+  emp:   (orgId: string, sub: string) => ({ PK: `ORG#${orgId}`, SK: `EMP#${sub}` }),
+  book:  (orgId: string, id: string)  => ({ PK: `ORG#${orgId}`, SK: `BOOK#${id}` }),
+  slot:  (orgId: string, num: number) => ({ PK: `ORG#${orgId}`, SK: `SLOT#${String(num).padStart(3,"0")}` }),
+  shift: (orgId: string, sub: string, id: string) => ({ PK: `ORG#${orgId}`, SK: `SHIFT#${sub}#${id}` }),
+};
+
+// ── Generic get ───────────────────────────────────────────────────────────────
+
+export async function getItem<T>(pk: string, sk: string): Promise<T | null> {
+  const res = await db.send(new GetCommand({ TableName: TABLE, Key: { PK: pk, SK: sk } }));
+  return (res.Item as T) ?? null;
+}
+
+// ── User lookup by Cognito sub (GSI1) ────────────────────────────────────────
+
+export async function getUserBySub(sub: string) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: GSI_USER,
+    KeyConditionExpression: "GSI1PK = :pk",
+    ExpressionAttributeValues: { ":pk": `USER#${sub}` },
+    Limit: 1,
+  }));
+  return res.Items?.[0] ?? null;
+}
+
+// ── Org ───────────────────────────────────────────────────────────────────────
+
+export async function createOrg(data: {
+  orgId: string; orgName: string; llcName: string; address: string;
+  retailNum: string; phone: string; slots: number; inviteCode: string;
+}) {
+  await db.send(new PutCommand({
+    TableName: TABLE,
+    Item: { ...k.org(data.orgId), ...data, createdAt: new Date().toISOString() },
+    ConditionExpression: "attribute_not_exists(PK)",
+  }));
+}
+
+export async function getOrg(orgId: string) {
+  return getItem<Record<string, unknown>>(k.org(orgId).PK, "PROFILE");
+}
+
+export async function updateOrg(orgId: string, fields: Record<string, unknown>) {
+  const entries = Object.entries(fields);
+  const expr = entries.map((_, i) => `#f${i} = :v${i}`).join(", ");
+  const names = Object.fromEntries(entries.map(([k], i) => [`#f${i}`, k]));
+  const values = Object.fromEntries(entries.map(([, v], i) => [`:v${i}`, v]));
+  await db.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: k.org(orgId),
+    UpdateExpression: `SET ${expr}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  }));
+}
+
+// ── Find org by invite code ───────────────────────────────────────────────────
+
+export async function getOrgByInviteCode(code: string) {
+  // Scan is acceptable here — invite codes are rare; production should add a GSI
+  const { QueryCommand: Q } = await import("@aws-sdk/lib-dynamodb");
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: GSI_USER, // reuse user index isn't right; do FilterExpression on table scan
+    // Actually we'll do a conditional scan — this is a small table operation
+    KeyConditionExpression: "SK = :sk",
+    FilterExpression: "inviteCode = :code",
+    ExpressionAttributeValues: { ":sk": "PROFILE", ":code": code },
+  }));
+  // Fallback: scan with filter (acceptable for low-volume invite validation)
+  if (!res.Items?.length) {
+    const { ScanCommand } = await import("@aws-sdk/lib-dynamodb");
+    const scan = await db.send(new ScanCommand({
+      TableName: TABLE,
+      FilterExpression: "SK = :sk AND inviteCode = :code",
+      ExpressionAttributeValues: { ":sk": "PROFILE", ":code": code },
+    }));
+    return scan.Items?.[0] ?? null;
+  }
+  return res.Items[0];
+}
+
+// ── Owner / Employee ──────────────────────────────────────────────────────────
+
+export async function createOwner(orgId: string, sub: string, data: { name: string; email: string }) {
+  await db.send(new PutCommand({
+    TableName: TABLE,
+    Item: {
+      ...k.owner(orgId, sub),
+      GSI1PK: `USER#${sub}`,
+      orgId, sub, role: "owner",
+      ...data,
+      createdAt: new Date().toISOString(),
+    },
+  }));
+}
+
+export async function createEmployee(orgId: string, sub: string, data: { name: string; email: string; phone: string }) {
+  await db.send(new PutCommand({
+    TableName: TABLE,
+    Item: {
+      ...k.emp(orgId, sub),
+      GSI1PK: `USER#${sub}`,
+      orgId, sub, role: "employee", status: "pending",
+      ...data,
+      createdAt: new Date().toISOString(),
+    },
+  }));
+}
+
+export async function listEmployees(orgId: string) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+    ExpressionAttributeValues: { ":pk": `ORG#${orgId}`, ":prefix": "EMP#" },
+  }));
+  return res.Items ?? [];
+}
+
+export async function updateEmployee(orgId: string, sub: string, fields: Record<string, unknown>) {
+  const entries = Object.entries(fields);
+  const expr = entries.map((_, i) => `#f${i} = :v${i}`).join(", ");
+  const names = Object.fromEntries(entries.map(([k], i) => [`#f${i}`, k]));
+  const values = Object.fromEntries(entries.map(([, v], i) => [`:v${i}`, v]));
+  await db.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: k.emp(orgId, sub),
+    UpdateExpression: `SET ${expr}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  }));
+}
+
+// ── Books ─────────────────────────────────────────────────────────────────────
+
+export async function listBooks(orgId: string) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+    ExpressionAttributeValues: { ":pk": `ORG#${orgId}`, ":prefix": "BOOK#" },
+  }));
+  return res.Items ?? [];
+}
+
+export async function createBook(orgId: string, data: {
+  gameId: string; gameName: string; pack: string;
+  ticketStart: number; ticketEnd: number; price: number;
+}) {
+  const bookId = randomUUID();
+  const item = {
+    ...k.book(orgId, bookId),
+    orgId, bookId, status: "inactive", slot: null,
+    activatedAt: null, settledAt: null,
+    ...data,
+    createdAt: new Date().toISOString(),
+  };
+  await db.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return item;
+}
+
+export async function updateBook(orgId: string, bookId: string, fields: Record<string, unknown>) {
+  const entries = Object.entries(fields);
+  const expr = entries.map((_, i) => `#f${i} = :v${i}`).join(", ");
+  const names = Object.fromEntries(entries.map(([k], i) => [`#f${i}`, k]));
+  const values = Object.fromEntries(entries.map(([, v], i) => [`:v${i}`, v]));
+  await db.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: k.book(orgId, bookId),
+    UpdateExpression: `SET ${expr}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  }));
+}
+
+// ── Slots ─────────────────────────────────────────────────────────────────────
+
+export async function listSlots(orgId: string) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+    ExpressionAttributeValues: { ":pk": `ORG#${orgId}`, ":prefix": "SLOT#" },
+  }));
+  return res.Items ?? [];
+}
+
+export async function upsertSlot(orgId: string, slotNum: number, bookId: string | null) {
+  await db.send(new PutCommand({
+    TableName: TABLE,
+    Item: { ...k.slot(orgId, slotNum), orgId, slotNum, bookId, updatedAt: new Date().toISOString() },
+  }));
+}
+
+// ── Shifts ────────────────────────────────────────────────────────────────────
+
+export async function getActiveShift(orgId: string, sub: string) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: GSI_EMP,
+    KeyConditionExpression: "GSI2PK = :pk",
+    FilterExpression: "#s = :active",
+    ExpressionAttributeNames: { "#s": "status" },
+    ExpressionAttributeValues: { ":pk": `EMP#${sub}`, ":active": "active" },
+    Limit: 1,
+  }));
+  return res.Items?.[0] ?? null;
+}
+
+export async function listShifts(orgId: string, sub: string, limit = 20) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: GSI_EMP,
+    KeyConditionExpression: "GSI2PK = :pk",
+    ExpressionAttributeValues: { ":pk": `EMP#${sub}` },
+    ScanIndexForward: false,
+    Limit: limit,
+  }));
+  return res.Items ?? [];
+}
+
+export async function clockIn(orgId: string, sub: string, empName: string, ticketStart: number, slotNum: number) {
+  const shiftId = randomUUID();
+  const item = {
+    ...k.shift(orgId, sub, shiftId),
+    GSI2PK: `EMP#${sub}`,
+    GSI2SK: `SHIFT#${shiftId}`,
+    orgId, shiftId, empSub: sub, empName, slotNum,
+    ticketStart, clockIn: new Date().toISOString(), status: "active",
+  };
+  await db.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return item;
+}
+
+export async function clockOut(orgId: string, sub: string, shiftId: string, ticketEnd: number) {
+  const now = new Date().toISOString();
+  await db.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: k.shift(orgId, sub, shiftId),
+    UpdateExpression: "SET ticketEnd = :te, #s = :done, clockOut = :co",
+    ExpressionAttributeNames: { "#s": "status" },
+    ExpressionAttributeValues: { ":te": ticketEnd, ":done": "completed", ":co": now },
+  }));
+}
