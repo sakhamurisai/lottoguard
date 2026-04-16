@@ -112,7 +112,7 @@ export default function ManagementPage() {
   const totalSold = shifts.reduce((sum, s) => sum + (s.sold ?? 0), 0);
 
   return (
-    <div className="p-6 space-y-5 max-w-4xl">
+    <div className="p-6 space-y-5">
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

@@ -45,13 +45,13 @@ export async function POST(req: Request) {
       Buffer.from(tokens.AccessToken.split(".")[1], "base64url").toString()
     ).sub as string;
 
-    // GSI is eventually consistent — retry once if the record isn't visible yet
+    // GSI is eventually consistent — retry with back-off if record isn't visible yet
+    // (most common right after signup; established accounts should hit on first try)
     let user = await getUserBySub(sub);
-    if (!user) {
-      await new Promise((r) => setTimeout(r, 800));
-      user = await getUserBySub(sub);
-    }
-    if (!user) return Response.json({ error: "User profile not found" }, { status: 404 });
+    if (!user) { await new Promise((r) => setTimeout(r, 600));  user = await getUserBySub(sub); }
+    if (!user) { await new Promise((r) => setTimeout(r, 1200)); user = await getUserBySub(sub); }
+    if (!user) { await new Promise((r) => setTimeout(r, 2000)); user = await getUserBySub(sub); }
+    if (!user) return Response.json({ error: "User profile not found. Please contact support." }, { status: 404 });
 
     const res = Response.json({
       user: {

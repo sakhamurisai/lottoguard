@@ -3,17 +3,20 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  TrendUp, Warning, CheckCircle, ArrowClockwise,
-  Package, GridFour, Users, BookOpen,
+  Warning, CheckCircle, ArrowClockwise,
+  Package, GridFour, Users, BookOpen, Truck,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/components/auth-provider";
 import { cn } from "@/lib/utils";
 
-type Book = { status: string; activatedAt?: string; settledAt?: string; gameName: string; slot?: number | null };
+type Book = { status: string; activatedAt?: string; settledAt?: string; gameName: string; slot?: number | null; shipmentId?: string | null };
 type Slot = { slotNum: number; bookId: string | null };
 type Employee = { status: string; name: string };
+type Shipment = { shipmentId: string; createdAt: string };
 
 type Stats = {
+  totalShipments: number;
+  totalBooks: number;
   activeBooks: number;
   slotsFilled: number;
   totalSlots: number;
@@ -40,45 +43,54 @@ export default function OwnerDashboard() {
 
   async function load() {
     setLoading(true);
-    const [booksRes, slotsRes, empsRes] = await Promise.all([
+    const [booksRes, shipmentsRes, slotsRes, empsRes] = await Promise.all([
       fetch("/api/inventory"),
+      fetch("/api/shipments"),
       fetch("/api/slots"),
       fetch("/api/employees"),
     ]);
 
-    const books: Book[]     = booksRes.ok  ? (await booksRes.json()).books      : [];
+    const books: Book[]       = booksRes.ok     ? (await booksRes.json()).books          : [];
+    const shipments: Shipment[]= shipmentsRes.ok ? (await shipmentsRes.json()).shipments  : [];
     const slotData: { slots: Slot[]; total: number } = slotsRes.ok ? await slotsRes.json() : { slots: [], total: 0 };
-    const emps: Employee[]  = empsRes.ok   ? (await empsRes.json()).employees   : [];
+    const emps: Employee[]    = empsRes.ok       ? (await empsRes.json()).employees       : [];
 
-    const activeBooks     = books.filter((b) => b.status === "active").length;
-    const slotsFilled     = slotData.slots.filter((s) => s.bookId).length;
-    const pendingEmployees= emps.filter((e) => e.status === "pending").length;
+    const activeBooks      = books.filter((b) => b.status === "active").length;
+    const slotsFilled      = slotData.slots.filter((s) => s.bookId).length;
+    const pendingEmployees = emps.filter((e) => e.status === "pending").length;
 
-    setStats({ activeBooks, slotsFilled, totalSlots: slotData.total, pendingEmployees });
+    setStats({ totalShipments: shipments.length, totalBooks: books.length, activeBooks, slotsFilled, totalSlots: slotData.total, pendingEmployees });
     setSlots(slotData.slots);
 
     // Build activity feed from recent events
     const events: ActivityItem[] = [];
+    // Recent shipments received
+    shipments
+      .slice(0, 2)
+      .forEach((s) => events.push({ ok: true, msg: `Shipment received — ${books.filter((b) => b.shipmentId === s.shipmentId).length} books`, time: timeAgo(s.createdAt) }));
+    // Recently activated books
     books
       .filter((b) => b.activatedAt)
       .sort((a, b) => new Date(b.activatedAt!).getTime() - new Date(a.activatedAt!).getTime())
       .slice(0, 2)
       .forEach((b) => events.push({ ok: true, msg: `${b.gameName} activated${b.slot ? ` — Slot ${b.slot}` : ""}`, time: timeAgo(b.activatedAt!) }));
+    // Recently settled
     books
       .filter((b) => b.settledAt)
       .sort((a, b) => new Date(b.settledAt!).getTime() - new Date(a.settledAt!).getTime())
       .slice(0, 1)
       .forEach((b) => events.push({ ok: true, msg: `${b.gameName} settled`, time: timeAgo(b.settledAt!) }));
+    // Employees awaiting approval
     emps
       .filter((e) => e.status === "pending")
       .slice(0, 2)
       .forEach((e) => events.push({ ok: false, msg: `${e.name} awaiting approval`, time: "recently" }));
-    slotData.slots
-      .filter((s) => !s.bookId)
-      .slice(0, 1)
-      .forEach((s) => events.push({ ok: false, msg: `Slot ${s.slotNum} is empty — no book assigned`, time: "" }));
+    // Empty slots warning
+    const emptySlots = slotData.slots.filter((s) => !s.bookId).length;
+    if (emptySlots > 0)
+      events.push({ ok: false, msg: `${emptySlots} slot${emptySlots > 1 ? "s" : ""} empty — no book assigned`, time: "" });
 
-    setActivity(events.slice(0, 5));
+    setActivity(events.slice(0, 6));
     setLoading(false);
   }
 
@@ -86,15 +98,16 @@ export default function OwnerDashboard() {
 
   const STAT_CARDS = stats
     ? [
-        { label: "Active Books",      value: String(stats.activeBooks),                         icon: BookOpen, color: "text-primary"  },
-        { label: "Slots Filled",      value: `${stats.slotsFilled} / ${stats.totalSlots}`,      icon: GridFour, color: "text-emerald-500" },
-        { label: "Pending Approvals", value: String(stats.pendingEmployees),                     icon: Users,    color: "text-amber-500"   },
-        { label: "Inventory",         value: String(stats.activeBooks + (stats.totalSlots - stats.slotsFilled)), icon: Package, color: "text-purple-500" },
+        { label: "Shipments",         value: String(stats.totalShipments),                  icon: Truck,    color: "text-primary"       },
+        { label: "Total Books",       value: String(stats.totalBooks),                      icon: Package,  color: "text-purple-500"    },
+        { label: "Active Books",      value: String(stats.activeBooks),                     icon: BookOpen, color: "text-emerald-500"   },
+        { label: "Slots Filled",      value: `${stats.slotsFilled} / ${stats.totalSlots}`, icon: GridFour, color: "text-blue-500"      },
+        { label: "Pending Approvals", value: String(stats.pendingEmployees),                icon: Users,    color: "text-amber-500"     },
       ]
     : [];
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl">
+    <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
@@ -114,15 +127,15 @@ export default function OwnerDashboard() {
             href="/owner/inventory"
             className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-xl hover:opacity-90 transition-opacity font-medium shadow-sm"
           >
-            + Add Book
+            + Add Shipment
           </Link>
         </div>
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {loading
-          ? Array.from({ length: 4 }).map((_, i) => (
+          ? Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="border rounded-2xl p-4 space-y-3">
                 <div className="h-3 bg-muted rounded animate-pulse w-20" />
                 <div className="h-8 bg-muted rounded animate-pulse w-12" />

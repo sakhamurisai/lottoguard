@@ -325,7 +325,7 @@ export default function BooksPage() {
   const activeCount   = books.filter((b) => b.status === "active").length;
 
   return (
-    <div className="p-6 space-y-5 max-w-5xl">
+    <div className="p-6 space-y-5">
       {modal && (
         <ReceiptModal
           book={modal.book}
