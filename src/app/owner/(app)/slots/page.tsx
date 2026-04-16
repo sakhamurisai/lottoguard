@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowClockwise, Plus, Minus, X, MagnifyingGlass, CheckCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, Plus, Minus, X, MagnifyingGlass, CheckCircle, PencilSimple } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 
 type Slot = { slotNum: number; bookId: string | null };
@@ -13,7 +13,6 @@ type Book = { bookId: string; gameId: string; gameName: string; pack: string; pr
 const TIERS = [
   { price:  1, label:  "$1", color: "text-green-700 dark:text-green-300",   bg: "bg-green-50 dark:bg-green-950/50",   border: "border-green-200 dark:border-green-800/60",   headerBg: "bg-green-100 dark:bg-green-900/60",   dot: "bg-green-500"   },
   { price:  2, label:  "$2", color: "text-teal-700 dark:text-teal-300",     bg: "bg-teal-50 dark:bg-teal-950/50",     border: "border-teal-200 dark:border-teal-800/60",     headerBg: "bg-teal-100 dark:bg-teal-900/60",     dot: "bg-teal-500"    },
-  { price:  3, label:  "$3", color: "text-sky-700 dark:text-sky-300",       bg: "bg-sky-50 dark:bg-sky-950/50",       border: "border-sky-200 dark:border-sky-800/60",       headerBg: "bg-sky-100 dark:bg-sky-900/60",       dot: "bg-sky-500"     },
   { price:  5, label:  "$5", color: "text-blue-700 dark:text-blue-300",     bg: "bg-blue-50 dark:bg-blue-950/50",     border: "border-blue-200 dark:border-blue-800/60",     headerBg: "bg-blue-100 dark:bg-blue-900/60",     dot: "bg-blue-500"    },
   { price: 10, label: "$10", color: "text-violet-700 dark:text-violet-300", bg: "bg-violet-50 dark:bg-violet-950/50", border: "border-violet-200 dark:border-violet-800/60", headerBg: "bg-violet-100 dark:bg-violet-900/60", dot: "bg-violet-500"  },
   { price: 20, label: "$20", color: "text-purple-700 dark:text-purple-300", bg: "bg-purple-50 dark:bg-purple-950/50", border: "border-purple-200 dark:border-purple-800/60", headerBg: "bg-purple-100 dark:bg-purple-900/60", dot: "bg-purple-500"  },
@@ -166,19 +165,87 @@ function BookPicker({ slotN, tier, currentId, books, assignedIds, onAssign, onCl
   );
 }
 
+// ── Rename modal ──────────────────────────────────────────────────────────────
+
+interface RenameProps {
+  slotN:   number;
+  current: string;
+  onSave:  (name: string) => void;
+  onClose: () => void;
+}
+
+function RenameModal({ slotN, current, onSave, onClose }: RenameProps) {
+  const [value, setValue] = useState(current);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); inputRef.current?.select(); }, []);
+
+  function submit() { onSave(value); }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+      <div className="bg-background border rounded-2xl w-full max-w-xs shadow-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Rename slot</h3>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-muted transition-colors text-muted-foreground">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <input
+          ref={inputRef}
+          value={value}
+          maxLength={40}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") onClose(); }}
+          placeholder={`e.g. Machine ${slotN}, Counter left…`}
+          className="w-full border rounded-xl px-3 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+        />
+
+        <div className="flex gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 border rounded-xl py-2 text-sm font-medium hover:bg-muted transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            className="flex-1 bg-primary text-primary-foreground rounded-xl py-2 text-sm font-semibold hover:opacity-90 transition-opacity"
+          >
+            Save
+          </button>
+        </div>
+
+        {value.trim() && (
+          <button
+            onClick={() => onSave("")}
+            className="w-full text-xs text-muted-foreground hover:text-destructive transition-colors text-center"
+          >
+            Clear name
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 
-interface Picker { tierIdx: number; colIdx: number; slotN: number; currentId: string | null }
+interface Picker  { tierIdx: number; colIdx: number; slotN: number; currentId: string | null }
+interface Renamer { slotN: number; current: string }
 
 export default function SlotsPage() {
   const [slots,          setSlots]          = useState<Slot[]>([]);
   const [books,          setBooks]          = useState<Book[]>([]);
   // per-tier column counts keyed by price string
   const [tierCounts,     setTierCounts]     = useState<Record<string, number>>({});
+  const [slotNames,      setSlotNames]      = useState<Record<string, string>>({});
   const [loading,        setLoading]        = useState(true);
   const [updating,       setUpdating]       = useState<number | null>(null);
   const [savingTier,     setSavingTier]     = useState<number | null>(null);
   const [picker,         setPicker]         = useState<Picker | null>(null);
+  const [renamer,        setRenamer]        = useState<Renamer | null>(null);
 
   async function load() {
     setLoading(true);
@@ -196,6 +263,7 @@ export default function SlotsPage() {
       const defaults: Record<string, number> = {};
       TIERS.forEach((t) => { defaults[String(t.price)] = saved[String(t.price)] ?? 6; });
       setTierCounts(defaults);
+      setSlotNames((org?.slotNames as Record<string, string>) ?? {});
 
       // Ensure org.slots covers all 8×20 = 160 blocks
       if (!org?.slots || (org.slots as number) < 160) {
@@ -249,6 +317,19 @@ export default function SlotsPage() {
       body: JSON.stringify({ tierSlotCounts: newCounts }),
     });
     setSavingTier(null);
+  }
+
+  async function renameSlot(slotN: number, name: string) {
+    const trimmed = name.trim();
+    const newNames = { ...slotNames, [String(slotN)]: trimmed };
+    if (!trimmed) delete newNames[String(slotN)];
+    setSlotNames(newNames);
+    setRenamer(null);
+    await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slotNames: newNames }),
+    });
   }
 
   const assignedBookIds = new Set(slots.filter((s) => s.bookId).map((s) => s.bookId!));
@@ -309,57 +390,71 @@ export default function SlotsPage() {
                     const slotData     = slots.find((s) => s.slotNum === sn);
                     const assignedBook = books.find((b) => b.bookId === slotData?.bookId);
                     const isUpdating   = updating === sn;
+                    const customName   = slotNames[String(sn)] ?? "";
 
                     return (
-                      <button
-                        key={ci}
-                        style={FOLD}
-                        disabled={isUpdating}
-                        onClick={() => setPicker({ tierIdx: ti, colIdx: ci, slotN: sn, currentId: slotData?.bookId ?? null })}
-                        className={cn(
-                          "w-[110px] min-h-[110px] rounded-xl border p-2.5 text-left space-y-1.5",
-                          "transition-all hover:shadow-md hover:scale-[1.02] active:scale-[0.98]",
-                          assignedBook
-                            ? cn(tier.bg, tier.border, "hover:brightness-95")
-                            : "bg-background border-dashed border-muted-foreground/25 hover:border-primary/50 hover:bg-primary/5"
-                        )}
-                      >
-                        {/* Slot # */}
-                        <div className="flex items-center justify-between">
-                          <span className={cn(
-                            "text-[9px] font-bold uppercase tracking-widest",
-                            assignedBook ? tier.color : "text-muted-foreground/50"
-                          )}>
-                            #{sn}
-                          </span>
-                          {assignedBook && (
-                            <span className={cn("text-[9px] font-black", tier.color)}>
-                              {tier.label}
-                            </span>
+                      <div key={ci} className="relative group/card">
+                        <button
+                          style={FOLD}
+                          disabled={isUpdating}
+                          onClick={() => setPicker({ tierIdx: ti, colIdx: ci, slotN: sn, currentId: slotData?.bookId ?? null })}
+                          className={cn(
+                            "w-[110px] min-h-[110px] rounded-xl border p-2.5 text-left space-y-1.5",
+                            "transition-all hover:shadow-md hover:scale-[1.02] active:scale-[0.98]",
+                            assignedBook
+                              ? cn(tier.bg, tier.border, "hover:brightness-95")
+                              : "bg-background border-dashed border-muted-foreground/25 hover:border-primary/50 hover:bg-primary/5"
                           )}
-                        </div>
+                        >
+                          {/* Custom name row */}
+                          <div className="flex items-center justify-between min-h-[14px]">
+                            {customName ? (
+                              <span className={cn(
+                                "text-[9px] font-bold uppercase tracking-widest truncate max-w-[72px]",
+                                assignedBook ? tier.color : "text-muted-foreground/60"
+                              )}>
+                                {customName}
+                              </span>
+                            ) : (
+                              <span /> /* spacer */
+                            )}
+                          </div>
 
-                        {/* Content */}
-                        {isUpdating ? (
-                          <div className="flex items-center justify-center h-12">
-                            <span className="size-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-                          </div>
-                        ) : assignedBook ? (
-                          <div className="space-y-0.5">
-                            <p className="text-[10px] font-semibold leading-tight line-clamp-3">
-                              {assignedBook.gameName}
-                            </p>
-                            <p className="text-[9px] text-muted-foreground font-mono">
-                              {assignedBook.pack}
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="flex flex-col items-center justify-center h-12 gap-1">
-                            <Plus className="size-4 text-muted-foreground/30" />
-                            <span className="text-[9px] text-muted-foreground/40">Assign</span>
-                          </div>
-                        )}
-                      </button>
+                          {/* Content */}
+                          {isUpdating ? (
+                            <div className="flex items-center justify-center h-12">
+                              <span className="size-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                            </div>
+                          ) : assignedBook ? (
+                            <div className="space-y-0.5">
+                              <p className="text-[10px] font-semibold leading-tight line-clamp-3">
+                                {assignedBook.gameName}
+                              </p>
+                              <p className="text-[9px] text-muted-foreground font-mono">
+                                {assignedBook.pack}
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center justify-center h-12 gap-1">
+                              <Plus className="size-4 text-muted-foreground/30" />
+                              <span className="text-[9px] text-muted-foreground/40">Assign</span>
+                            </div>
+                          )}
+                        </button>
+
+                        {/* Pencil rename button — appears on card hover */}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setRenamer({ slotN: sn, current: customName }); }}
+                          title="Rename slot"
+                          className={cn(
+                            "absolute top-1.5 right-1.5 size-5 rounded-md flex items-center justify-center",
+                            "opacity-0 group-hover/card:opacity-100 transition-opacity",
+                            "bg-background/80 hover:bg-background border shadow-sm"
+                          )}
+                        >
+                          <PencilSimple className="size-2.5 text-muted-foreground" />
+                        </button>
+                      </div>
                     );
                   })
                 )}
@@ -417,6 +512,16 @@ export default function SlotsPage() {
           })}
           <span className="ml-auto font-semibold">{filledCount}/{totalCells} total</span>
         </div>
+      )}
+
+      {/* Rename modal */}
+      {renamer && (
+        <RenameModal
+          slotN={renamer.slotN}
+          current={renamer.current}
+          onSave={(name) => renameSlot(renamer.slotN, name)}
+          onClose={() => setRenamer(null)}
+        />
       )}
 
       {/* Book picker modal */}

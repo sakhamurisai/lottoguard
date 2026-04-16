@@ -21,6 +21,7 @@ const schema = z.object({
   slots:           z.coerce.number().int().min(1).max(500).optional(),
   slotsPerTier:    z.coerce.number().int().min(1).max(20).optional(),
   tierSlotCounts:  z.record(z.string(), z.number().int().min(1).max(20)).optional(),
+  slotNames:       z.record(z.string(), z.string().max(40)).optional(),
   regenerateInvite: z.boolean().optional(),
 });
 
