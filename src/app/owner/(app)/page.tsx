@@ -50,7 +50,7 @@ function fmtDay(iso: string) {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function OwnerDashboard() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [data,       setData]       = useState<Analytics | null>(null);
   const [loading,    setLoading]    = useState(true);
   const [dismissed,  setDismissed]  = useState<Set<string>>(new Set());
@@ -62,7 +62,9 @@ export default function OwnerDashboard() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (!authLoading && user) load();
+  }, [authLoading, user]);
 
   const warnings = (data?.warnings ?? []).filter((w) => !dismissed.has(w.type));
   const s        = data?.summary;

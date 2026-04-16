@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ShieldCheck, Hourglass, Eye, EyeSlash } from "@phosphor-icons/react";
+import { ShieldCheck, Hourglass, Eye, EyeSlash, Warning } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 
 type Phase = "form" | "pending";
@@ -19,8 +19,10 @@ export default function EmployeeRegisterPage() {
   const [phase, setPhase]       = useState<Phase>("form");
   const [loading, setLoading]   = useState(false);
   const [showPw, setShowPw]     = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError]       = useState("");
   const [codeErr, setCodeErr]   = useState("");
+  const [confirm, setConfirm]   = useState("");
   const [form, setForm]         = useState({ name: "", email: "", phone: "", inviteCode: "", password: "" });
 
   function set(key: string, val: string) {
@@ -33,6 +35,16 @@ export default function EmployeeRegisterPage() {
     e.preventDefault();
     setError("");
     setCodeErr("");
+
+    if (form.password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (form.password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+
     setLoading(true);
 
     const res = await fetch("/api/auth/register", {
@@ -43,6 +55,7 @@ export default function EmployeeRegisterPage() {
         email:      form.email,
         phone:      form.phone,
         inviteCode: form.inviteCode.trim().toUpperCase(),
+        password:   form.password,
       }),
     });
 
@@ -131,6 +144,62 @@ export default function EmployeeRegisterPage() {
                 />
               </div>
             ))}
+
+            {/* Password */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Password</label>
+              <div className="relative">
+                <input
+                  type={showPw ? "text" : "password"}
+                  required
+                  placeholder="Min. 8 characters"
+                  value={form.password}
+                  onChange={(e) => set("password", e.target.value)}
+                  className="w-full border rounded-xl px-4 py-2.5 pr-11 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPw((v) => !v)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showPw ? <EyeSlash className="size-4" /> : <Eye className="size-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Confirm password */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Confirm Password</label>
+              <div className="relative">
+                <input
+                  type={showConfirm ? "text" : "password"}
+                  required
+                  placeholder="Re-enter password"
+                  value={confirm}
+                  onChange={(e) => { setConfirm(e.target.value); setError(""); }}
+                  className={cn(
+                    "w-full border rounded-xl px-4 py-2.5 pr-11 text-sm bg-background focus:outline-none focus:ring-2 transition",
+                    confirm && confirm !== form.password
+                      ? "border-destructive focus:ring-destructive/30"
+                      : "focus:ring-primary/30"
+                  )}
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowConfirm((v) => !v)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showConfirm ? <EyeSlash className="size-4" /> : <Eye className="size-4" />}
+                </button>
+              </div>
+              {confirm && confirm !== form.password && (
+                <p className="text-xs text-destructive flex items-center gap-1">
+                  <Warning className="size-3" />Passwords do not match
+                </p>
+              )}
+            </div>
 
             {/* Invite code */}
             <div className="space-y-1.5">

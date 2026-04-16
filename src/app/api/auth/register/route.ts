@@ -1,6 +1,6 @@
 import { SignUpCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { z } from "zod";
-import { createHmac, randomUUID } from "crypto";
+import { createHmac } from "crypto";
 import { cognitoClient } from "@/lib/aws";
 import { getOrgByInviteCode, createEmployee } from "@/lib/db";
 import { errResponse } from "@/lib/validate";
@@ -10,6 +10,7 @@ const schema = z.object({
   email:      z.string().email(),
   phone:      z.string().min(7),
   inviteCode: z.string().min(1),
+  password:   z.string().min(8),
 });
 
 function secretHash(email: string): string | undefined {
@@ -30,7 +31,7 @@ export async function POST(req: Request) {
     const orgId = org.orgId as string;
 
     // 2. Cognito SignUp — Cognito sends verification email automatically
-    const tempPassword = `Lg-${randomUUID().slice(0, 8)}!`;
+    const tempPassword = body.password;
     const hash = secretHash(body.email);
 
     const signUp = await cognitoClient.send(new SignUpCommand({
