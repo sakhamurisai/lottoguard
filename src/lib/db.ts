@@ -383,6 +383,24 @@ export async function listActivationLogs(orgId: string, limit = 50) {
   return res.Items ?? [];
 }
 
+// ── All Shifts for org (owner analytics) ─────────────────────────────────────
+
+export async function listAllShifts(orgId: string) {
+  const results: Record<string, unknown>[] = [];
+  let lastKey: Record<string, unknown> | undefined;
+  do {
+    const res = await db.send(new QueryCommand({
+      TableName: TABLE,
+      KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+      ExpressionAttributeValues: { ":pk": `ORG#${orgId}`, ":prefix": "SHIFT#" },
+      ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+    }));
+    results.push(...(res.Items as Record<string, unknown>[] ?? []));
+    lastKey = res.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } while (lastKey);
+  return results;
+}
+
 // ── Employee Shifts (by sub) ──────────────────────────────────────────────────
 
 export async function listShiftsByEmployee(orgId: string, sub: string, limit = 30) {

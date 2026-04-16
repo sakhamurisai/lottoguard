@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ArrowClockwise, Plus, Minus, X, MagnifyingGlass, CheckCircle, PencilSimple } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
@@ -238,9 +239,9 @@ interface Renamer { slotN: number; current: string }
 export default function SlotsPage() {
   const [slots,          setSlots]          = useState<Slot[]>([]);
   const [books,          setBooks]          = useState<Book[]>([]);
-  // per-tier column counts keyed by price string
   const [tierCounts,     setTierCounts]     = useState<Record<string, number>>({});
   const [slotNames,      setSlotNames]      = useState<Record<string, string>>({});
+  const [slotBudget,     setSlotBudget]     = useState<number>(0);   // org.slots cap
   const [loading,        setLoading]        = useState(true);
   const [updating,       setUpdating]       = useState<number | null>(null);
   const [savingTier,     setSavingTier]     = useState<number | null>(null);
@@ -258,23 +259,34 @@ export default function SlotsPage() {
     if (booksRes.ok)    setBooks((await booksRes.json()).books as Book[]);
     if (settingsRes.ok) {
       const { org } = await settingsRes.json();
-      const saved = (org?.tierSlotCounts as Record<string, number>) ?? {};
-      // Default 6 per tier if not yet configured
-      const defaults: Record<string, number> = {};
-      TIERS.forEach((t) => { defaults[String(t.price)] = saved[String(t.price)] ?? 6; });
-      setTierCounts(defaults);
+      const budget = (org?.slots as number) ?? 0;
+      setSlotBudget(budget);
       setSlotNames((org?.slotNames as Record<string, string>) ?? {});
 
-      // Ensure org.slots covers all 8×20 = 160 blocks
-      if (!org?.slots || (org.slots as number) < 160) {
-        await fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ slots: 160 }),
-        });
-        // Re-fetch slots after expanding
-        const sr2 = await fetch("/api/slots");
-        if (sr2.ok) setSlots((await sr2.json()).slots as Slot[]);
+      const saved = (org?.tierSlotCounts as Record<string, number>) ?? {};
+      // Default counts: distribute budget evenly across tiers (6 each or what fits)
+      const defaultPer = Math.max(1, Math.floor(budget / TIERS.length));
+      const defaults: Record<string, number> = {};
+      let remaining = budget;
+      TIERS.forEach((t, i) => {
+        const count = saved[String(t.price)] ?? (i < TIERS.length - 1 ? Math.min(defaultPer, remaining) : remaining);
+        defaults[String(t.price)] = Math.max(0, Math.min(count, remaining, MAX_PER_TIER));
+        remaining -= defaults[String(t.price)];
+      });
+      setTierCounts(defaults);
+
+      // Expand org slot store to support the block grid (does not change budget)
+      if ((budget ?? 0) > 0) {
+        const storeNeeded = Math.max(budget, 160);
+        if (!org?.slots || (org.slots as number) < storeNeeded) {
+          await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ slots: storeNeeded }),
+          });
+          const sr2 = await fetch("/api/slots");
+          if (sr2.ok) setSlots((await sr2.json()).slots as Slot[]);
+        }
       }
     }
     setLoading(false);
@@ -296,8 +308,13 @@ export default function SlotsPage() {
 
   async function changeTierCount(tierIdx: number, price: number, delta: 1 | -1) {
     const key    = String(price);
-    const cur    = tierCounts[key] ?? 6;
-    const next   = Math.min(MAX_PER_TIER, Math.max(1, cur + delta));
+    const cur    = tierCounts[key] ?? 0;
+    const totalAllocated = Object.values(tierCounts).reduce((a, b) => a + b, 0);
+
+    // Enforce budget cap when adding
+    if (delta === 1 && slotBudget > 0 && totalAllocated >= slotBudget) return;
+
+    const next   = Math.min(MAX_PER_TIER, Math.max(0, cur + delta));
     if (next === cur) return;
 
     // Removing: clear the last column's assignment for this tier first
@@ -332,11 +349,14 @@ export default function SlotsPage() {
     });
   }
 
-  const assignedBookIds = new Set(slots.filter((s) => s.bookId).map((s) => s.bookId!));
+  const assignedBookIds   = new Set(slots.filter((s) => s.bookId).map((s) => s.bookId!));
+  const totalAllocated    = Object.values(tierCounts).reduce((a, b) => a + b, 0);
+  const totalCells        = totalAllocated;
+  const budgetRemaining   = slotBudget > 0 ? slotBudget - totalAllocated : 0;
+  const atBudgetCap       = slotBudget > 0 && totalAllocated >= slotBudget;
 
-  const totalCells  = TIERS.reduce((s, t) => s + (tierCounts[String(t.price)] ?? 6), 0);
   const filledCount = TIERS.reduce((total, t, ti) => {
-    const count = tierCounts[String(t.price)] ?? 6;
+    const count = tierCounts[String(t.price)] ?? 0;
     return total + Array.from({ length: count }, (_, ci) => slotNum(ti, ci))
       .filter((sn) => slots.find((s) => s.slotNum === sn)?.bookId).length;
   }, 0);
@@ -348,13 +368,40 @@ export default function SlotsPage() {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-xl font-bold tracking-tight">Slots</h1>
-          <p className="text-sm text-muted-foreground">
-            {loading ? "Loading…" : `${filledCount} / ${totalCells} filled · click any slot to assign a book`}
-          </p>
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : (
+            <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+              <p className="text-sm text-muted-foreground">
+                {filledCount} / {totalCells} filled
+                {slotBudget > 0 && ` · ${totalAllocated}/${slotBudget} slots allocated`}
+              </p>
+              {atBudgetCap && (
+                <span className="text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-full">
+                  Budget full — increase in Settings
+                </span>
+              )}
+              {!atBudgetCap && slotBudget > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {budgetRemaining} slot{budgetRemaining !== 1 ? "s" : ""} remaining
+                </span>
+              )}
+            </div>
+          )}
         </div>
-        <button onClick={load} className="p-2 border rounded-xl hover:bg-muted transition-colors text-muted-foreground">
-          <ArrowClockwise className={cn("size-4", loading && "animate-spin")} />
-        </button>
+        <div className="flex items-center gap-2">
+          {atBudgetCap && !loading && (
+            <Link
+              href="/owner/settings"
+              className="text-xs font-medium text-primary border border-primary/30 rounded-xl px-3 py-1.5 hover:bg-primary/5 transition-colors"
+            >
+              Increase budget →
+            </Link>
+          )}
+          <button onClick={load} className="p-2 border rounded-xl hover:bg-muted transition-colors text-muted-foreground">
+            <ArrowClockwise className={cn("size-4", loading && "animate-spin")} />
+          </button>
+        </div>
       </div>
 
       {/* Grid rows */}
@@ -464,8 +511,8 @@ export default function SlotsPage() {
               <div className="flex flex-col gap-1 shrink-0 pt-1">
                 <button
                   onClick={() => changeTierCount(ti, tier.price, 1)}
-                  disabled={loading || isSaving || count >= MAX_PER_TIER}
-                  title={`Add slot to ${tier.label} row`}
+                  disabled={loading || isSaving || count >= MAX_PER_TIER || atBudgetCap}
+                  title={atBudgetCap ? "Budget full — increase slot budget in Settings" : `Add slot to ${tier.label} row`}
                   className={cn(
                     "size-7 rounded-lg border flex items-center justify-center transition-colors",
                     "hover:bg-primary/10 hover:border-primary/40 hover:text-primary",
