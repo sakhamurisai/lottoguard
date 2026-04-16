@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { randomUUID } from "crypto";
 import { requireOwner, errResponse } from "@/lib/validate";
 import { getOrg, updateOrg } from "@/lib/db";
 
@@ -12,20 +13,31 @@ export async function GET() {
 }
 
 const schema = z.object({
-  orgName:   z.string().min(1).optional(),
-  llcName:   z.string().min(1).optional(),
-  address:   z.string().min(1).optional(),
-  retailNum: z.string().min(1).optional(),
-  phone:     z.string().min(7).optional(),
-  slots:     z.coerce.number().int().min(1).max(100).optional(),
+  orgName:         z.string().min(1).optional(),
+  llcName:         z.string().min(1).optional(),
+  address:         z.string().min(1).optional(),
+  retailNum:       z.string().min(1).optional(),
+  phone:           z.string().min(7).optional(),
+  slots:           z.coerce.number().int().min(1).max(500).optional(),
+  slotsPerTier:    z.coerce.number().int().min(1).max(20).optional(),
+  tierSlotCounts:  z.record(z.string(), z.number().int().min(1).max(20)).optional(),
+  regenerateInvite: z.boolean().optional(),
 });
 
 export async function PUT(req: Request) {
   try {
     const { orgId } = await requireOwner();
-    const fields = schema.parse(await req.json());
-    await updateOrg(orgId, fields);
-    return Response.json({ message: "Settings saved" });
+    const { regenerateInvite, ...rest } = schema.parse(await req.json());
+    const updates: Record<string, unknown> = { ...rest };
+    if (regenerateInvite) {
+      const org = await getOrg(orgId);
+      const retailNum = (org as Record<string, unknown>)?.retailNum as string ?? "";
+      const suffix = randomUUID().slice(0, 4).toUpperCase();
+      updates.inviteCode = `${retailNum.replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, 6)}-${suffix}`;
+    }
+    await updateOrg(orgId, updates);
+    const org = await getOrg(orgId);
+    return Response.json({ message: "Settings saved", org });
   } catch (err) {
     if (err instanceof z.ZodError) return Response.json({ error: err.issues?.[0]?.message ?? err.message }, { status: 400 });
     return errResponse(err);
