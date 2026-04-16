@@ -156,6 +156,10 @@ export async function listEmployees(orgId: string) {
   return res.Items ?? [];
 }
 
+export async function deleteEmployee(orgId: string, sub: string) {
+  await db.send(new DeleteCommand({ TableName: TABLE, Key: k.emp(orgId, sub) }));
+}
+
 export async function updateEmployee(orgId: string, sub: string, fields: Record<string, unknown>) {
   const entries = Object.entries(fields);
   const expr = entries.map((_, i) => `#f${i} = :v${i}`).join(", ");

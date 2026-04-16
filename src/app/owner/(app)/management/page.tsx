@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import {
   CheckCircle, XCircle, ProhibitInset, Copy,
   ArrowClockwise, Clock, TrendUp, Ticket,
-  UserCircle, CalendarBlank,
+  UserCircle, CalendarBlank, Trash,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +57,7 @@ export default function ManagementPage() {
   const [selected,      setSelected]      = useState<Employee | null>(null);
   const [shifts,        setShifts]        = useState<Shift[]>([]);
   const [shiftsLoading, setShiftsLoading] = useState(false);
+  const [deleting,      setDeleting]      = useState(false);
 
   async function load() {
     setLoading(true);
@@ -95,6 +96,18 @@ export default function ManagementPage() {
       if (selected?.sub === sub) setSelected((d) => d ? { ...d, status } : d);
     }
     setUpdating(null);
+  }
+
+  async function deleteEmp(sub: string) {
+    if (!confirm("Permanently delete this employee? This cannot be undone.")) return;
+    setDeleting(true);
+    const r = await fetch(`/api/employees/${sub}`, { method: "DELETE" });
+    if (r.ok) {
+      setEmployees((prev) => prev.filter((e) => e.sub !== sub));
+      setSelected(null);
+      setShifts([]);
+    }
+    setDeleting(false);
   }
 
   function copyCode() {
@@ -240,7 +253,7 @@ export default function ManagementPage() {
                 </div>
 
                 {/* Action buttons */}
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                   <span className={cn("text-xs font-semibold px-2.5 py-1 rounded-full capitalize", STATUS_STYLE[selected.status])}>
                     {selected.status}
                   </span>
@@ -280,6 +293,18 @@ export default function ManagementPage() {
                           <CheckCircle className="size-3.5" />Re-enable
                         </button>
                       )}
+                      <button
+                        onClick={() => deleteEmp(selected.sub)}
+                        disabled={deleting}
+                        className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-xl border border-red-200 bg-red-50 text-destructive hover:bg-red-100 transition-colors disabled:opacity-50"
+                        title="Delete employee permanently"
+                      >
+                        {deleting
+                          ? <span className="size-3.5 rounded-full border-2 border-destructive border-t-transparent animate-spin" />
+                          : <Trash className="size-3.5" />
+                        }
+                        Delete
+                      </button>
                     </>
                   )}
                 </div>
