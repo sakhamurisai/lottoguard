@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ArrowClockwise } from "@phosphor-icons/react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ArrowClockwise, UploadSimple, X, CheckCircle,
+  Warning, Spinner, FileMagnifyingGlass,
+} from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 
 type Status = "inactive" | "active" | "settled";
@@ -9,12 +12,13 @@ type Book = {
   bookId: string; gameId: string; gameName: string; pack: string; price: number;
   slot: number | null; status: Status; activatedAt: string | null; settledAt: string | null;
 };
+type ActionType = "activate" | "deactivate" | "settle";
 
 const TABS: { label: string; value: Status | "all" }[] = [
-  { label: "All", value: "all" },
-  { label: "Active", value: "active" },
+  { label: "All",      value: "all"      },
+  { label: "Active",   value: "active"   },
   { label: "Inactive", value: "inactive" },
-  { label: "Settled", value: "settled" },
+  { label: "Settled",  value: "settled"  },
 ];
 
 const STATUS_STYLE: Record<Status, string> = {
@@ -23,16 +27,247 @@ const STATUS_STYLE: Record<Status, string> = {
   settled:  "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
 };
 
+const ACTION_LABEL: Record<ActionType, string> = {
+  activate:   "Activate",
+  deactivate: "Deactivate",
+  settle:     "Settle",
+};
+
+const ACTION_COLOR: Record<ActionType, string> = {
+  activate:   "bg-emerald-600 hover:bg-emerald-700 text-white",
+  deactivate: "border border-border hover:bg-accent text-foreground",
+  settle:     "bg-blue-600 hover:bg-blue-700 text-white",
+};
+
 function fmt(iso: string | null) {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+// ── Receipt scan modal ────────────────────────────────────────────────────────
+
+type ScanResult = {
+  action: string; bookNumber: string | null; gameId: string | null;
+  gameName: string | null; date: string | null; terminalNum: string | null;
+  retailerNum: string | null; status: string | null;
+};
+
+type ModalState =
+  | { type: "idle" }
+  | { type: "uploading" }
+  | { type: "scanning" }
+  | { type: "result"; scan: ScanResult; warnings: string[]; errors: string[] }
+  | { type: "confirming" };
+
+interface ReceiptModalProps {
+  book: Book;
+  action: ActionType;
+  onConfirm: () => void;
+  onClose: () => void;
+}
+
+function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [state, setState] = useState<ModalState>({ type: "idle" });
+  const [dragOver, setDragOver] = useState(false);
+
+  async function handleFile(file: File) {
+    setState({ type: "uploading" });
+    try {
+      // 1. Get presigned URL
+      const presignRes = await fetch("/api/upload/presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, contentType: file.type }),
+      });
+      if (!presignRes.ok) throw new Error("Failed to get upload URL");
+      const { url, key } = await presignRes.json() as { url: string; key: string };
+
+      // 2. Upload to S3
+      const uploadRes = await fetch(url, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+      if (!uploadRes.ok) throw new Error("Upload failed");
+
+      // 3. Scan receipt
+      setState({ type: "scanning" });
+      const scanRes = await fetch("/api/receipt/scan-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      });
+      if (!scanRes.ok) throw new Error("Could not read receipt");
+      const { data } = await scanRes.json() as { data: ScanResult };
+
+      // 4. Cross-validate
+      const warnings: string[] = [];
+      const errors:   string[] = [];
+
+      const expectedAction = action === "activate" ? "activate" : action === "deactivate" ? "deactivate" : "settle";
+      if (data.action && data.action !== "unknown" && data.action !== expectedAction) {
+        errors.push(`Receipt says "${data.action}" but you are trying to ${action} this book.`);
+      }
+
+      const normalizedExtracted = (data.bookNumber ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+      const normalizedBook      = (book.pack ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+      if (normalizedExtracted && normalizedBook && normalizedExtracted !== normalizedBook) {
+        warnings.push(`Receipt book # (${data.bookNumber}) differs from selected book pack (${book.pack}). Verify before confirming.`);
+      }
+
+      setState({ type: "result", scan: data, warnings, errors });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unexpected error";
+      setState({ type: "result", scan: { action: "unknown", bookNumber: null, gameId: null, gameName: null, date: null, terminalNum: null, retailerNum: null, status: null }, warnings: [], errors: [msg] });
+    }
+  }
+
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  }
+
+  const isIdle     = state.type === "idle";
+  const isBusy     = state.type === "uploading" || state.type === "scanning" || state.type === "confirming";
+  const hasResult  = state.type === "result";
+  const hasErrors  = hasResult && state.errors.length > 0;
+  const canConfirm = hasResult && state.errors.length === 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+      <div className="bg-background border rounded-3xl w-full max-w-md shadow-2xl overflow-hidden">
+
+        {/* Modal header */}
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b">
+          <div>
+            <h2 className="font-semibold">{ACTION_LABEL[action]}: {book.gameName}</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Pack {book.pack} · ${book.price}/ticket</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-xl hover:bg-muted transition-colors text-muted-foreground">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-5">
+          {/* Upload zone */}
+          {(isIdle || hasResult) && (
+            <div>
+              <p className="text-sm font-medium mb-3">
+                {isIdle ? "Upload terminal receipt (optional)" : "Re-scan receipt"}
+              </p>
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={onDrop}
+                onClick={() => fileRef.current?.click()}
+                className={cn(
+                  "border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors",
+                  dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/30"
+                )}
+              >
+                <UploadSimple className="size-6 text-muted-foreground mx-auto mb-2" />
+                <p className="text-sm text-muted-foreground">Drag & drop or click to upload</p>
+                <p className="text-xs text-muted-foreground mt-1">JPG, PNG, WebP, HEIC</p>
+                <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+              </div>
+            </div>
+          )}
+
+          {/* Busy states */}
+          {(state.type === "uploading" || state.type === "scanning") && (
+            <div className="flex flex-col items-center gap-3 py-6">
+              <Spinner className="size-8 text-primary animate-spin" />
+              <p className="text-sm text-muted-foreground">
+                {state.type === "uploading" ? "Uploading receipt…" : "Reading receipt with AI…"}
+              </p>
+            </div>
+          )}
+
+          {/* Scan result */}
+          {hasResult && (
+            <div className="space-y-3">
+              {/* Errors */}
+              {state.errors.map((e, i) => (
+                <div key={i} className="flex gap-2 items-start p-3 bg-destructive/8 border border-destructive/20 rounded-xl text-sm text-destructive">
+                  <X className="size-4 shrink-0 mt-0.5" />
+                  {e}
+                </div>
+              ))}
+              {/* Warnings */}
+              {state.warnings.map((w, i) => (
+                <div key={i} className="flex gap-2 items-start p-3 bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800/40 rounded-xl text-sm text-amber-800 dark:text-amber-300">
+                  <Warning className="size-4 shrink-0 mt-0.5" />
+                  {w}
+                </div>
+              ))}
+              {/* Extracted info */}
+              {!hasErrors && (
+                <div className="flex gap-2 items-start p-3 bg-emerald-50 border border-emerald-200 dark:bg-emerald-900/20 dark:border-emerald-800/40 rounded-xl text-sm text-emerald-800 dark:text-emerald-300">
+                  <CheckCircle weight="fill" className="size-4 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-medium">Receipt verified</p>
+                    {state.scan.bookNumber && <p className="text-xs mt-0.5">Book: {state.scan.bookNumber}</p>}
+                    {state.scan.gameName && <p className="text-xs">Game: {state.scan.gameName}</p>}
+                    {state.scan.date && <p className="text-xs">Date: {state.scan.date}</p>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Scan icon for scanning state */}
+          {state.type === "confirming" && (
+            <div className="flex flex-col items-center gap-3 py-6">
+              <Spinner className="size-8 text-primary animate-spin" />
+              <p className="text-sm text-muted-foreground">Updating book status…</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-3 px-6 pb-6">
+          <button onClick={onClose} disabled={isBusy}
+            className="flex-1 border rounded-xl py-2.5 text-sm font-medium hover:bg-accent transition-colors disabled:opacity-50">
+            Cancel
+          </button>
+          {/* Skip receipt / Confirm */}
+          {isIdle && (
+            <button onClick={onConfirm}
+              className={cn("flex-1 rounded-xl py-2.5 text-sm font-medium transition-colors", ACTION_COLOR[action])}>
+              Skip & {ACTION_LABEL[action]}
+            </button>
+          )}
+          {canConfirm && (
+            <button onClick={onConfirm} disabled={isBusy}
+              className={cn("flex-1 rounded-xl py-2.5 text-sm font-medium transition-colors disabled:opacity-50", ACTION_COLOR[action])}>
+              Confirm {ACTION_LABEL[action]}
+            </button>
+          )}
+          {hasErrors && (
+            <button onClick={onConfirm} disabled={isBusy}
+              className="flex-1 border border-amber-400 text-amber-700 dark:text-amber-400 rounded-xl py-2.5 text-sm font-medium hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors disabled:opacity-50">
+              Override & {ACTION_LABEL[action]}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
 export default function BooksPage() {
-  const [books, setBooks] = useState<Book[]>([]);
+  const [books,   setBooks]   = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<Status | "all">("all");
+  const [tab,     setTab]     = useState<Status | "all">("all");
   const [updating, setUpdating] = useState<string | null>(null);
+
+  // Modal state
+  const [modal, setModal] = useState<{ book: Book; action: ActionType } | null>(null);
+
+  // Error log
+  const [errorLog, setErrorLog] = useState<{ bookId: string; gameName: string; msg: string }[]>([]);
 
   async function load() {
     setLoading(true);
@@ -43,46 +278,108 @@ export default function BooksPage() {
 
   useEffect(() => { load(); }, []);
 
-  async function updateStatus(bookId: string, status: Status, slot: number | null = null) {
+  async function updateStatus(bookId: string, status: Status) {
     setUpdating(bookId);
-    const body: Record<string, unknown> = { status };
-    if (slot !== undefined) body.slot = slot;
     const r = await fetch(`/api/books/${bookId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ status }),
     });
     if (r.ok) {
       setBooks((prev) => prev.map((b) =>
         b.bookId !== bookId ? b : {
           ...b, status,
-          activatedAt: status === "active" ? new Date().toISOString() : b.activatedAt,
+          activatedAt: status === "active"  ? new Date().toISOString() : b.activatedAt,
           settledAt:   status === "settled" ? new Date().toISOString() : b.settledAt,
-          slot: status === "settled" ? null : (slot ?? b.slot),
         }
       ));
+    } else {
+      const data = await r.json() as { error?: string };
+      const book = books.find((b) => b.bookId === bookId);
+      if (book) setErrorLog((prev) => [...prev, { bookId, gameName: book.gameName, msg: data.error ?? "Update failed" }]);
     }
     setUpdating(null);
+    setModal(null);
+  }
+
+  // Bulk actions
+  async function bulkUpdate(fromStatus: Status, toStatus: Status) {
+    const targets = books.filter((b) => b.status === fromStatus);
+    for (const b of targets) await updateStatus(b.bookId, toStatus);
+  }
+
+  function openModal(book: Book, action: ActionType) {
+    setModal({ book, action });
+  }
+
+  function handleConfirm() {
+    if (!modal) return;
+    const status: Status =
+      modal.action === "activate"   ? "active"   :
+      modal.action === "deactivate" ? "inactive" : "settled";
+    updateStatus(modal.book.bookId, status);
   }
 
   const visible = tab === "all" ? books : books.filter((b) => b.status === tab);
+  const inactiveCount = books.filter((b) => b.status === "inactive").length;
+  const activeCount   = books.filter((b) => b.status === "active").length;
 
   return (
     <div className="p-6 space-y-5 max-w-5xl">
-      <div className="flex items-center justify-between">
+      {modal && (
+        <ReceiptModal
+          book={modal.book}
+          action={modal.action}
+          onConfirm={handleConfirm}
+          onClose={() => setModal(null)}
+        />
+      )}
+
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <h1 className="text-xl font-semibold tracking-tight">Activate / Deactivate / Settle</h1>
-        <button onClick={load} className="p-2 border rounded-xl hover:bg-muted transition-colors text-muted-foreground">
-          <ArrowClockwise className={cn("size-4", loading && "animate-spin")} />
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {inactiveCount > 0 && (
+            <button onClick={() => bulkUpdate("inactive", "active")} disabled={!!updating}
+              className="text-xs px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-colors font-medium disabled:opacity-50">
+              Activate All ({inactiveCount})
+            </button>
+          )}
+          {activeCount > 0 && (
+            <button onClick={() => bulkUpdate("active", "inactive")} disabled={!!updating}
+              className="text-xs px-3 py-2 rounded-xl border hover:bg-accent transition-colors font-medium disabled:opacity-50">
+              Deactivate All ({activeCount})
+            </button>
+          )}
+          <button onClick={load} className="p-2 border rounded-xl hover:bg-muted transition-colors text-muted-foreground">
+            <ArrowClockwise className={cn("size-4", loading && "animate-spin")} />
+          </button>
+        </div>
       </div>
 
+      {/* Error log */}
+      {errorLog.length > 0 && (
+        <div className="border border-destructive/30 rounded-2xl p-4 space-y-2 bg-destructive/5">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-destructive uppercase tracking-widest">Error Log</p>
+            <button onClick={() => setErrorLog([])} className="text-xs text-muted-foreground hover:text-foreground">Clear</button>
+          </div>
+          {errorLog.map((e, i) => (
+            <div key={i} className="flex items-start gap-2 text-sm text-destructive">
+              <X className="size-3.5 shrink-0 mt-0.5" />
+              <span><span className="font-medium">{e.gameName}</span>: {e.msg}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Tabs */}
-      <div className="flex gap-1 border-b">
+      <div className="flex gap-1 border-b overflow-x-auto">
         {TABS.map((t) => {
           const count = t.value === "all" ? books.length : books.filter((b) => b.status === t.value).length;
           return (
             <button key={t.value} onClick={() => setTab(t.value)}
-              className={cn("px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors",
+              className={cn("px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap",
                 tab === t.value ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
               {t.label}
               <span className="ml-1.5 text-xs text-muted-foreground">({count})</span>
@@ -94,7 +391,7 @@ export default function BooksPage() {
       {/* Table */}
       <div className="border rounded-2xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm min-w-[640px]">
             <thead className="bg-muted/50 border-b">
               <tr>
                 {["Game", "Pack", "Price", "Slot", "Status", "Activated", "Settled", "Actions"].map((h) => (
@@ -123,25 +420,29 @@ export default function BooksPage() {
                           {b.status}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{fmt(b.activatedAt)}</td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{fmt(b.settledAt)}</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">{fmt(b.activatedAt)}</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">{fmt(b.settledAt)}</td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1.5 flex-wrap">
-                          {updating === b.bookId && <span className="size-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />}
+                          {updating === b.bookId && (
+                            <span className="size-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                          )}
                           {updating !== b.bookId && b.status === "inactive" && (
-                            <button onClick={() => updateStatus(b.bookId, "active")}
-                              className="text-xs px-3 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors font-medium">
+                            <button onClick={() => openModal(b, "activate")}
+                              className="text-xs px-3 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors font-medium inline-flex items-center gap-1">
+                              <FileMagnifyingGlass className="size-3" />
                               Activate
                             </button>
                           )}
                           {updating !== b.bookId && b.status === "active" && (
                             <>
-                              <button onClick={() => updateStatus(b.bookId, "inactive")}
+                              <button onClick={() => openModal(b, "deactivate")}
                                 className="text-xs px-3 py-1 rounded-lg border hover:bg-accent transition-colors font-medium">
                                 Deactivate
                               </button>
-                              <button onClick={() => updateStatus(b.bookId, "settled")}
-                                className="text-xs px-3 py-1 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors font-medium">
+                              <button onClick={() => openModal(b, "settle")}
+                                className="text-xs px-3 py-1 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors font-medium inline-flex items-center gap-1">
+                                <FileMagnifyingGlass className="size-3" />
                                 Settle
                               </button>
                             </>

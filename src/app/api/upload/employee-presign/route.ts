@@ -3,7 +3,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { s3Client } from "@/lib/aws";
-import { requireOwner, errResponse } from "@/lib/validate";
+import { requireEmployee, errResponse } from "@/lib/validate";
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
 
@@ -14,11 +14,11 @@ const schema = z.object({
 
 export async function POST(req: Request) {
   try {
-    const { orgId } = await requireOwner();
+    const { orgId } = await requireEmployee();
     const { filename, contentType } = schema.parse(await req.json());
 
     const ext = filename.split(".").pop() ?? "jpg";
-    const key = `orgs/${orgId}/receipts/${randomUUID()}.${ext}`;
+    const key = `orgs/${orgId}/serials/${randomUUID()}.${ext}`;
 
     const url = await getSignedUrl(
       s3Client,
@@ -27,7 +27,7 @@ export async function POST(req: Request) {
         Key: key,
         ContentType: contentType,
       }),
-      { expiresIn: Number(process.env.S3_PRESIGN_TTL ?? 300) }
+      { expiresIn: 120 }
     );
 
     return Response.json({ url, key });

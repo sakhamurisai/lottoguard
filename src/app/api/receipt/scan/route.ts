@@ -8,17 +8,42 @@ import { requireOwner, errResponse } from "@/lib/validate";
 const schema = z.object({ key: z.string().min(1) });
 
 const PROMPT = `
-You are analyzing an Ohio Lottery scratch-off ticket delivery receipt.
-Extract the following fields and return them as a single JSON object (no markdown):
+You are analyzing an Ohio Lottery scratch-off ticket delivery receipt or inventory sheet.
+
+Your job:
+1. Extract EVERY lottery book listed in the image as an array.
+2. If the image is too blurry, dark, angled, or otherwise unreadable, set "unclear" to true.
+
+Return ONLY valid JSON — no markdown, no explanation:
+
 {
-  "gameId":      string,   // e.g. "G-4821"
-  "gameName":    string,   // e.g. "Gold Rush Riches"
-  "pack":        string,   // e.g. "P-001"
-  "ticketStart": number,   // starting ticket number in the pack
-  "ticketEnd":   number,   // ending ticket number in the pack
-  "price":       number    // price per ticket in dollars (e.g. 5)
+  "unclear": false,
+  "reason": null,
+  "books": [
+    {
+      "gameId":      "G-4821",
+      "gameName":    "Gold Rush Riches",
+      "pack":        "P-001",
+      "ticketStart": 1,
+      "ticketEnd":   300,
+      "price":       5
+    }
+  ]
 }
-If a field is not visible, use null for strings and 0 for numbers.
+
+If the image is unclear, return:
+{
+  "unclear": true,
+  "reason": "One-sentence explanation of why the image could not be read.",
+  "books": []
+}
+
+Rules:
+- Extract ALL books visible, not just the first one.
+- "price" is the face value per ticket in USD (number, not string).
+- "ticketStart" and "ticketEnd" are integers.
+- If a specific field is unreadable for one book, use null for strings and 0 for numbers.
+- Never invent data that is not visible in the image.
 `.trim();
 
 export async function POST(req: Request) {
@@ -26,7 +51,6 @@ export async function POST(req: Request) {
     await requireOwner();
     const { key } = schema.parse(await req.json());
 
-    // Generate a short-lived read URL for OpenAI
     const readUrl = await getSignedUrl(
       s3Client,
       new GetObjectCommand({ Bucket: process.env.S3_BUCKET!, Key: key }),
@@ -45,18 +69,30 @@ export async function POST(req: Request) {
           ],
         },
       ],
-      max_tokens: 300,
+      max_tokens: 2000,
     });
 
     const raw = resp.choices[0].message.content ?? "{}";
-    // Strip any accidental markdown code fences
     const json = raw.replace(/```json?/g, "").replace(/```/g, "").trim();
-    const extracted = JSON.parse(json);
+    const result = JSON.parse(json) as {
+      unclear: boolean;
+      reason: string | null;
+      books: {
+        gameId: string; gameName: string; pack: string;
+        ticketStart: number; ticketEnd: number; price: number;
+      }[];
+    };
 
-    return Response.json({ extracted });
+    if (result.unclear) {
+      return Response.json({ unclear: true, reason: result.reason ?? "Image could not be read." }, { status: 422 });
+    }
+
+    return Response.json({ unclear: false, books: result.books ?? [] });
   } catch (err) {
-    if (err instanceof z.ZodError) return Response.json({ error: err.errors[0].message }, { status: 400 });
-    if (err instanceof SyntaxError) return Response.json({ error: "Could not parse receipt data from image." }, { status: 422 });
+    if (err instanceof z.ZodError)
+      return Response.json({ error: err.issues?.[0]?.message ?? err.message }, { status: 400 });
+    if (err instanceof SyntaxError)
+      return Response.json({ unclear: true, reason: "Could not parse the image. Please try a clearer photo." }, { status: 422 });
     return errResponse(err);
   }
 }

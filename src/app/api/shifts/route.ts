@@ -31,7 +31,7 @@ export async function POST(req: Request) {
     await clockOut(payload.orgId, payload.sub, body.shiftId, body.ticketEnd);
     return Response.json({ message: "Clocked out successfully" });
   } catch (err) {
-    if (err instanceof z.ZodError) return Response.json({ error: err.errors[0].message }, { status: 400 });
+    if (err instanceof z.ZodError) return Response.json({ error: err.issues?.[0]?.message ?? err.message }, { status: 400 });
     return errResponse(err);
   }
 }

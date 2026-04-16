@@ -45,7 +45,12 @@ export async function POST(req: Request) {
       Buffer.from(tokens.AccessToken.split(".")[1], "base64url").toString()
     ).sub as string;
 
-    const user = await getUserBySub(sub);
+    // GSI is eventually consistent — retry once if the record isn't visible yet
+    let user = await getUserBySub(sub);
+    if (!user) {
+      await new Promise((r) => setTimeout(r, 800));
+      user = await getUserBySub(sub);
+    }
     if (!user) return Response.json({ error: "User profile not found" }, { status: 404 });
 
     const res = Response.json({
@@ -75,8 +80,11 @@ export async function POST(req: Request) {
     if (name === "NotAuthorizedException" || name === "UserNotFoundException") {
       return Response.json({ error: "Invalid email or password" }, { status: 401 });
     }
+    if (name === "UserNotConfirmedException") {
+      return Response.json({ error: "Please verify your email first.", code: "UNCONFIRMED" }, { status: 403 });
+    }
     if (err instanceof z.ZodError) {
-      return Response.json({ error: err.errors[0].message }, { status: 400 });
+      return Response.json({ error: err.issues?.[0]?.message ?? err.message }, { status: 400 });
     }
     return errResponse(err);
   }

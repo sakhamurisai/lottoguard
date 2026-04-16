@@ -14,7 +14,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     await updateEmployee(orgId, sub, { status });
     return Response.json({ message: "Employee updated" });
   } catch (err) {
-    if (err instanceof z.ZodError) return Response.json({ error: err.errors[0].message }, { status: 400 });
+    if (err instanceof z.ZodError) return Response.json({ error: err.issues?.[0]?.message ?? err.message }, { status: 400 });
     return errResponse(err);
   }
 }

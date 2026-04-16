@@ -27,7 +27,7 @@ export async function PUT(req: Request) {
     await updateOrg(orgId, fields);
     return Response.json({ message: "Settings saved" });
   } catch (err) {
-    if (err instanceof z.ZodError) return Response.json({ error: err.errors[0].message }, { status: 400 });
+    if (err instanceof z.ZodError) return Response.json({ error: err.issues?.[0]?.message ?? err.message }, { status: 400 });
     return errResponse(err);
   }
 }

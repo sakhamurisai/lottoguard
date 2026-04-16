@@ -1,7 +1,6 @@
-import { SignUpCommand, AdminConfirmSignUpCommand } from "@aws-sdk/client-cognito-identity-provider";
+import { SignUpCommand, type SignUpCommandInput } from "@aws-sdk/client-cognito-identity-provider";
 import { z } from "zod";
-import { randomUUID } from "crypto";
-import { createHmac } from "crypto";
+import { randomUUID, createHmac } from "crypto";
 import { cognitoClient } from "@/lib/aws";
 import { createOrg, createOwner } from "@/lib/db";
 import { errResponse } from "@/lib/validate";
@@ -17,7 +16,7 @@ const schema = z.object({
   password:  z.string().min(8),
 });
 
-function secretHash(email: string) {
+function secretHash(email: string): string | undefined {
   const secret = process.env.COGNITO_CLIENT_SECRET;
   if (!secret) return undefined;
   return createHmac("sha256", secret)
@@ -35,47 +34,40 @@ export async function POST(req: Request) {
     const body = schema.parse(await req.json());
     const orgId = randomUUID();
     const inviteCode = generateInviteCode(body.retailNum);
+    const hash = secretHash(body.email);
 
-    // 1. Cognito SignUp
-    const signUpParams: Parameters<typeof SignUpCommand>[0]["input"] = {
-      ClientId: process.env.COGNITO_CLIENT_ID!,
-      Username: body.email,
-      Password: body.password,
+    // 1. Cognito SignUp — Cognito sends a verification email automatically
+    const signUpInput: SignUpCommandInput = {
+      ClientId:   process.env.COGNITO_CLIENT_ID!,
+      Username:   body.email,
+      Password:   body.password,
+      SecretHash: hash,
       UserAttributes: [
         { Name: "email", Value: body.email },
-        { Name: "custom:role", Value: "owner" },
-        { Name: "custom:orgId", Value: orgId },
       ],
     };
-    const hash = secretHash(body.email);
-    if (hash) signUpParams.SecretHash = hash;
 
-    const signUp = await cognitoClient.send(new SignUpCommand(signUpParams));
+    const signUp = await cognitoClient.send(new SignUpCommand(signUpInput));
     const sub = signUp.UserSub!;
 
-    // 2. Auto-confirm (dev convenience — in prod use email verification)
-    if (process.env.NODE_ENV !== "production") {
-      await cognitoClient.send(new AdminConfirmSignUpCommand({
-        UserPoolId: process.env.COGNITO_USER_POOL_ID!,
-        Username: body.email,
-      }));
-    }
-
-    // 3. DynamoDB: org + owner records
+    // 2. DynamoDB: org + owner records — written before email confirmation
+    //    so they're ready the moment the user verifies and logs in
     await Promise.all([
-      createOrg({ orgId, orgName: body.orgName, llcName: body.llcName, address: body.address, retailNum: body.retailNum, phone: body.phone, slots: body.slots, inviteCode }),
+      createOrg({
+        orgId, orgName: body.orgName, llcName: body.llcName,
+        address: body.address, retailNum: body.retailNum,
+        phone: body.phone, slots: body.slots, inviteCode,
+      }),
       createOwner(orgId, sub, { name: "Store Owner", email: body.email }),
     ]);
 
-    return Response.json({ message: "Account created. Please sign in." }, { status: 201 });
+    return Response.json({ message: "Check your email for a verification code.", email: body.email }, { status: 201 });
   } catch (err: unknown) {
     const name = (err as { name?: string }).name;
-    if (name === "UsernameExistsException") {
+    if (name === "UsernameExistsException")
       return Response.json({ error: "An account with this email already exists." }, { status: 409 });
-    }
-    if (err instanceof z.ZodError) {
-      return Response.json({ error: err.errors[0].message }, { status: 400 });
-    }
+    if (err instanceof z.ZodError)
+      return Response.json({ error: err.issues?.[0]?.message ?? err.message }, { status: 400 });
     return errResponse(err);
   }
 }

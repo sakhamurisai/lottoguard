@@ -4,8 +4,6 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShieldCheck, Eye, EyeSlash, CheckCircle } from "@phosphor-icons/react";
-import { useAuth } from "@/components/auth-provider";
-
 type Step = 0 | 1;
 
 const ORG_FIELDS: { key: string; label: string; placeholder: string; type?: string }[] = [
@@ -18,7 +16,6 @@ const ORG_FIELDS: { key: string; label: string; placeholder: string; type?: stri
 ];
 
 export default function OwnerSignupPage() {
-  const { login } = useAuth();
   const router = useRouter();
 
   const [step, setStep] = useState<Step>(0);
@@ -41,7 +38,6 @@ export default function OwnerSignupPage() {
 
     setSubmitting(true);
     try {
-      // 1. Create account
       const res = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -50,9 +46,7 @@ export default function OwnerSignupPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Signup failed");
 
-      // 2. Auto-login
-      await login(form.email, form.password, "owner");
-      router.push("/owner");
+      router.push(`/verify?email=${encodeURIComponent(form.email)}&redirect=/owner`);
     } catch (err: unknown) {
       setError((err as Error).message);
     } finally {

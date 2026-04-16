@@ -39,7 +39,6 @@ export async function requireAuth(): Promise<AuthPayload> {
   try {
     const result = await jwtVerify(token, getJWKS(), {
       issuer: `https://cognito-idp.${REGION}.amazonaws.com/${POOL_ID}`,
-      audience: process.env.COGNITO_CLIENT_ID,
     });
     payload = result.payload;
   } catch {

@@ -23,11 +23,12 @@ function LoginContent() {
   const params = useSearchParams();
 
   const [tab, setTab] = useState<Tab>((params.get("role") as Tab) ?? "owner");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(params.get("email") ?? "");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const verified = params.get("verified") === "1";
 
   useEffect(() => {
     if (user) router.replace(user.role === "owner" ? "/owner" : "/employee");
@@ -134,6 +135,12 @@ function LoginContent() {
                 </button>
               </div>
             </div>
+
+            {verified && (
+              <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+                Email verified! Sign in to continue.
+              </p>
+            )}
 
             {error && (
               <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/8 border border-destructive/15 rounded-xl px-4 py-3">

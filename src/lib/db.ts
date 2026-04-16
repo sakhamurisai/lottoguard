@@ -15,7 +15,7 @@
  */
 
 import {
-  GetCommand, PutCommand, UpdateCommand, QueryCommand,
+  GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand,
   TransactWriteCommand, DeleteCommand,
   type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
@@ -43,14 +43,29 @@ export async function getItem<T>(pk: string, sk: string): Promise<T | null> {
 // ── User lookup by Cognito sub (GSI1) ────────────────────────────────────────
 
 export async function getUserBySub(sub: string) {
-  const res = await db.send(new QueryCommand({
+  // Primary: GSI query (fast)
+  try {
+    const res = await db.send(new QueryCommand({
+      TableName: TABLE,
+      IndexName: GSI_USER,
+      KeyConditionExpression: "GSI1PK = :pk",
+      ExpressionAttributeValues: { ":pk": `USER#${sub}` },
+      Limit: 1,
+    }));
+    if (res.Items?.length) return res.Items[0];
+  } catch (e) {
+    console.warn("GSI query failed, falling back to scan:", e);
+  }
+
+  // Fallback: full scan filtered by sub (handles GSI lag / permission issues)
+  const fallback = await db.send(new ScanCommand({
     TableName: TABLE,
-    IndexName: GSI_USER,
-    KeyConditionExpression: "GSI1PK = :pk",
-    ExpressionAttributeValues: { ":pk": `USER#${sub}` },
-    Limit: 1,
+    FilterExpression: "#s = :sub",
+    ExpressionAttributeNames: { "#s": "sub" },
+    ExpressionAttributeValues: { ":sub": sub },
+    Limit: 10,
   }));
-  return res.Items?.[0] ?? null;
+  return fallback.Items?.[0] ?? null;
 }
 
 // ── Org ───────────────────────────────────────────────────────────────────────
@@ -87,27 +102,13 @@ export async function updateOrg(orgId: string, fields: Record<string, unknown>) 
 // ── Find org by invite code ───────────────────────────────────────────────────
 
 export async function getOrgByInviteCode(code: string) {
-  // Scan is acceptable here — invite codes are rare; production should add a GSI
-  const { QueryCommand: Q } = await import("@aws-sdk/lib-dynamodb");
-  const res = await db.send(new QueryCommand({
+  // Scan with filter — invite code validation is low-volume so scan is acceptable
+  const res = await db.send(new ScanCommand({
     TableName: TABLE,
-    IndexName: GSI_USER, // reuse user index isn't right; do FilterExpression on table scan
-    // Actually we'll do a conditional scan — this is a small table operation
-    KeyConditionExpression: "SK = :sk",
-    FilterExpression: "inviteCode = :code",
+    FilterExpression: "SK = :sk AND inviteCode = :code",
     ExpressionAttributeValues: { ":sk": "PROFILE", ":code": code },
   }));
-  // Fallback: scan with filter (acceptable for low-volume invite validation)
-  if (!res.Items?.length) {
-    const { ScanCommand } = await import("@aws-sdk/lib-dynamodb");
-    const scan = await db.send(new ScanCommand({
-      TableName: TABLE,
-      FilterExpression: "SK = :sk AND inviteCode = :code",
-      ExpressionAttributeValues: { ":sk": "PROFILE", ":code": code },
-    }));
-    return scan.Items?.[0] ?? null;
-  }
-  return res.Items[0];
+  return res.Items?.[0] ?? null;
 }
 
 // ── Owner / Employee ──────────────────────────────────────────────────────────
@@ -258,6 +259,86 @@ export async function clockIn(orgId: string, sub: string, empName: string, ticke
   };
   await db.send(new PutCommand({ TableName: TABLE, Item: item }));
   return item;
+}
+
+// ── Delivery Receipts ─────────────────────────────────────────────────────────
+
+export async function createDeliveryReceipt(orgId: string, data: Record<string, unknown>) {
+  const id = randomUUID();
+  await db.send(new PutCommand({
+    TableName: TABLE,
+    Item: { PK: `ORG#${orgId}`, SK: `DELIVERY#${id}`, orgId, id, ...data, createdAt: new Date().toISOString() },
+  }));
+  return id;
+}
+
+export async function listDeliveryReceipts(orgId: string, limit = 20) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+    ExpressionAttributeValues: { ":pk": `ORG#${orgId}`, ":prefix": "DELIVERY#" },
+    ScanIndexForward: false,
+    Limit: limit,
+  }));
+  return res.Items ?? [];
+}
+
+// ── Confirm Order Receipts ────────────────────────────────────────────────────
+
+export async function createOrderReceipt(orgId: string, data: Record<string, unknown>) {
+  const id = randomUUID();
+  await db.send(new PutCommand({
+    TableName: TABLE,
+    Item: { PK: `ORG#${orgId}`, SK: `CONFORDER#${id}`, orgId, id, ...data, createdAt: new Date().toISOString() },
+  }));
+  return id;
+}
+
+export async function listOrderReceipts(orgId: string, limit = 20) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+    ExpressionAttributeValues: { ":pk": `ORG#${orgId}`, ":prefix": "CONFORDER#" },
+    ScanIndexForward: false,
+    Limit: limit,
+  }));
+  return res.Items ?? [];
+}
+
+// ── Activation / Deactivation Logs ───────────────────────────────────────────
+
+export async function createActivationLog(orgId: string, data: Record<string, unknown>) {
+  const id = randomUUID();
+  await db.send(new PutCommand({
+    TableName: TABLE,
+    Item: { PK: `ORG#${orgId}`, SK: `ACTLOG#${id}`, orgId, id, ...data, createdAt: new Date().toISOString() },
+  }));
+  return id;
+}
+
+export async function listActivationLogs(orgId: string, limit = 50) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+    ExpressionAttributeValues: { ":pk": `ORG#${orgId}`, ":prefix": "ACTLOG#" },
+    ScanIndexForward: false,
+    Limit: limit,
+  }));
+  return res.Items ?? [];
+}
+
+// ── Employee Shifts (by sub) ──────────────────────────────────────────────────
+
+export async function listShiftsByEmployee(orgId: string, sub: string, limit = 30) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: GSI_EMP,
+    KeyConditionExpression: "GSI2PK = :pk",
+    ExpressionAttributeValues: { ":pk": `EMP#${sub}` },
+    ScanIndexForward: false,
+    Limit: limit,
+  }));
+  return res.Items ?? [];
 }
 
 export async function clockOut(orgId: string, sub: string, shiftId: string, ticketEnd: number) {
