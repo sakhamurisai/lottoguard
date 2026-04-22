@@ -2,13 +2,14 @@
  * Single-table DynamoDB helpers.
  *
  * Key schema:
- *   PK                 SK                       Entity
- *   ORG#{orgId}        PROFILE                  Organization
- *   ORG#{orgId}        OWNER#{sub}              Owner
- *   ORG#{orgId}        EMP#{sub}                Employee
- *   ORG#{orgId}        BOOK#{bookId}            LotteryBook
- *   ORG#{orgId}        SLOT#{num}               Slot
- *   ORG#{orgId}        SHIFT#{empSub}#{id}      Shift
+ *   PK                 SK                         Entity
+ *   ORG#{orgId}        PROFILE                    Organization
+ *   ORG#{orgId}        OWNER#{sub}                Owner
+ *   ORG#{orgId}        EMP#{sub}                  Employee
+ *   ORG#{orgId}        BOOK#{bookId}              LotteryBook
+ *   ORG#{orgId}        SLOT#{num}                 Slot
+ *   ORG#{orgId}        SHIFT#{empSub}#{id}        Shift
+ *   ORG#{orgId}        NOTIF#{isoTs}#{id}         Notification
  *
  *   GSI1 (UserIndex):  GSI1PK = USER#{sub}       → locate user's org
  *   GSI2 (EmployeeIndex): GSI2PK = EMP#{sub}     → employee shift history
@@ -25,13 +26,14 @@ import { randomUUID } from "crypto";
 // ── Keys ──────────────────────────────────────────────────────────────────────
 
 export const k = {
-  org:      (id: string)                          => ({ PK: `ORG#${id}`, SK: "PROFILE" }),
-  owner:    (orgId: string, sub: string)           => ({ PK: `ORG#${orgId}`, SK: `OWNER#${sub}` }),
-  emp:      (orgId: string, sub: string)           => ({ PK: `ORG#${orgId}`, SK: `EMP#${sub}` }),
-  book:     (orgId: string, id: string)            => ({ PK: `ORG#${orgId}`, SK: `BOOK#${id}` }),
-  shipment: (orgId: string, id: string)            => ({ PK: `ORG#${orgId}`, SK: `SHIPMENT#${id}` }),
-  slot:     (orgId: string, num: number)           => ({ PK: `ORG#${orgId}`, SK: `SLOT#${String(num).padStart(3,"0")}` }),
-  shift:    (orgId: string, sub: string, id: string) => ({ PK: `ORG#${orgId}`, SK: `SHIFT#${sub}#${id}` }),
+  org:      (id: string)                               => ({ PK: `ORG#${id}`, SK: "PROFILE" }),
+  owner:    (orgId: string, sub: string)                => ({ PK: `ORG#${orgId}`, SK: `OWNER#${sub}` }),
+  emp:      (orgId: string, sub: string)                => ({ PK: `ORG#${orgId}`, SK: `EMP#${sub}` }),
+  book:     (orgId: string, id: string)                 => ({ PK: `ORG#${orgId}`, SK: `BOOK#${id}` }),
+  shipment: (orgId: string, id: string)                 => ({ PK: `ORG#${orgId}`, SK: `SHIPMENT#${id}` }),
+  slot:     (orgId: string, num: number)                => ({ PK: `ORG#${orgId}`, SK: `SLOT#${String(num).padStart(3,"0")}` }),
+  shift:    (orgId: string, sub: string, id: string)    => ({ PK: `ORG#${orgId}`, SK: `SHIFT#${sub}#${id}` }),
+  notif:    (orgId: string, ts: string, id: string)     => ({ PK: `ORG#${orgId}`, SK: `NOTIF#${ts}#${id}` }),
 };
 
 // ── Generic get ───────────────────────────────────────────────────────────────
@@ -419,13 +421,101 @@ export async function listShiftsByEmployee(orgId: string, sub: string, limit = 3
   return res.Items ?? [];
 }
 
-export async function clockOut(orgId: string, sub: string, shiftId: string, ticketEnd: number) {
+export async function clockOut(
+  orgId: string,
+  sub: string,
+  shiftId: string,
+  fields: {
+    ticketEnd: number;
+    salesReceipt?: Record<string, unknown>;
+    cashesReceipt?: Record<string, unknown>;
+    finalCalc?: number;
+    drawerCash?: number;
+    discrepancyNote?: string;
+    discrepancySeverity?: "none" | "over" | "short";
+  },
+) {
   const now = new Date().toISOString();
+  const updates: string[] = [
+    "ticketEnd = :te",
+    "#s = :done",
+    "clockOut = :co",
+  ];
+  const names: Record<string, string>  = { "#s": "status" };
+  const values: Record<string, unknown> = {
+    ":te":   fields.ticketEnd,
+    ":done": "completed",
+    ":co":   now,
+  };
+  if (fields.salesReceipt)        { updates.push("salesReceipt = :sr");       values[":sr"]  = fields.salesReceipt; }
+  if (fields.cashesReceipt)       { updates.push("cashesReceipt = :cr");      values[":cr"]  = fields.cashesReceipt; }
+  if (fields.finalCalc != null)   { updates.push("finalCalc = :fc");          values[":fc"]  = fields.finalCalc; }
+  if (fields.drawerCash != null)  { updates.push("drawerCash = :dc");         values[":dc"]  = fields.drawerCash; }
+  if (fields.discrepancyNote)     { updates.push("discrepancyNote = :dn");    values[":dn"]  = fields.discrepancyNote; }
+  if (fields.discrepancySeverity) { updates.push("discrepancySeverity = :ds"); values[":ds"] = fields.discrepancySeverity; }
+
   await db.send(new UpdateCommand({
     TableName: TABLE,
     Key: k.shift(orgId, sub, shiftId),
-    UpdateExpression: "SET ticketEnd = :te, #s = :done, clockOut = :co",
-    ExpressionAttributeNames: { "#s": "status" },
-    ExpressionAttributeValues: { ":te": ticketEnd, ":done": "completed", ":co": now },
+    UpdateExpression: `SET ${updates.join(", ")}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
   }));
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+
+export type NotifSeverity = "emergency" | "important" | "warning" | "info";
+
+export interface NotifInput {
+  type: string;
+  severity: NotifSeverity;
+  message: string;
+  empName?: string;
+  empSub?: string;
+  detail?: Record<string, unknown>;
+  read?: boolean;
+}
+
+export async function createNotification(orgId: string, data: NotifInput) {
+  const id  = randomUUID();
+  const ts  = new Date().toISOString();
+  const item = {
+    ...k.notif(orgId, ts, id),
+    orgId, notifId: id,
+    ...data,
+    read: data.read ?? false,
+    createdAt: ts,
+  };
+  await db.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return item;
+}
+
+export async function listNotifications(orgId: string, limit = 50) {
+  const res = await db.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+    ExpressionAttributeValues: { ":pk": `ORG#${orgId}`, ":prefix": "NOTIF#" },
+    ScanIndexForward: false,
+    Limit: limit,
+  }));
+  return (res.Items ?? []) as (NotifInput & { notifId: string; createdAt: string; SK: string })[];
+}
+
+export async function markNotificationRead(orgId: string, sk: string) {
+  await db.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: { PK: `ORG#${orgId}`, SK: sk },
+    UpdateExpression: "SET #r = :t",
+    ExpressionAttributeNames: { "#r": "read" },
+    ExpressionAttributeValues: { ":t": true },
+  }));
+}
+
+export async function markAllNotificationsRead(orgId: string) {
+  const items = await listNotifications(orgId, 100);
+  if (items.length === 0) return;
+  await Promise.all(
+    items.filter((n) => !n.read).map((n) => markNotificationRead(orgId, n.SK))
+  );
 }

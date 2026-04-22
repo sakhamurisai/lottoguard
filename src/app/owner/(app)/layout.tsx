@@ -5,8 +5,9 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   House, Package, ToggleLeft, GridFour,
   UsersThree, Gear, SignOut, List, X, ShieldCheck,
+  Warning,
 } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/components/auth-provider";
 import { AuthGuard } from "@/components/auth-guard";
@@ -17,6 +18,7 @@ const NAV = [
   { label: "Activate / Settle", icon: ToggleLeft,  href: "/owner/books" },
   { label: "Slots",             icon: GridFour,    href: "/owner/slots" },
   { label: "Management",        icon: UsersThree,  href: "/owner/management" },
+  { label: "Error Log",         icon: Warning,     href: "/owner/error-log" },
   { label: "Settings",          icon: Gear,        href: "/owner/settings" },
 ];
 
@@ -24,6 +26,16 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
   const path = usePathname();
   const { user, logout } = useAuth();
   const router = useRouter();
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Fetch unread notification count for the badge
+  useEffect(() => {
+    if (!user) return;
+    fetch("/api/notifications")
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d) setUnreadCount(d.unreadCount ?? 0); })
+      .catch(() => {});
+  }, [user, path]); // re-fetch when navigating so count stays fresh
 
   function handleLogout() {
     logout();
@@ -48,7 +60,8 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
       {/* Nav */}
       <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
         {NAV.map(({ label, icon: Icon, href }) => {
-          const active = href === "/owner" ? path === "/owner" : path.startsWith(href);
+          const active  = href === "/owner" ? path === "/owner" : path.startsWith(href);
+          const isErrorLog = href === "/owner/error-log";
           return (
             <Link
               key={label}
@@ -62,7 +75,17 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
               )}
             >
               <Icon className="size-4 shrink-0" weight={active ? "fill" : "regular"} />
-              {label}
+              <span className="flex-1">{label}</span>
+              {isErrorLog && unreadCount > 0 && (
+                <span className={cn(
+                  "text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center",
+                  active
+                    ? "bg-primary-foreground/20 text-primary-foreground"
+                    : "bg-red-500 text-white"
+                )}>
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
             </Link>
           );
         })}

@@ -11,38 +11,29 @@ export async function GET() {
       getOrg(orgId),
     ]);
 
-    // Build book lookup by bookId
-    const bookMap: Record<string, { gameName: string; price: number; ticketStart: number; ticketEnd: number }> = {};
+    // Book lookup by bookId
+    const bookMap: Record<string, { gameName: string; pack: string; price: number; status: string }> = {};
     for (const b of books) {
       const id = b.bookId as string;
       bookMap[id] = {
-        gameName:    (b.gameName    as string) ?? "",
-        price:       (b.price       as number) ?? 0,
-        ticketStart: (b.ticketStart as number) ?? 0,
-        ticketEnd:   (b.ticketEnd   as number) ?? 0,
+        gameName: (b.gameName as string) ?? "",
+        pack:     (b.pack     as string) ?? "",
+        price:    (b.price    as number) ?? 0,
+        status:   (b.status   as string) ?? "",
       };
     }
 
-    // Get slot name map from org
-    const slotNames = (org?.slotNames as Record<string, string>) ?? {};
+    // Slot assignment map: slotNum → bookId
+    const slotMap: Record<number, string | null> = {};
+    for (const s of rawSlots) {
+      slotMap[s.slotNum as number] = (s.bookId as string | null) ?? null;
+    }
 
-    // Return only slots that have an active book assigned
-    const slots = rawSlots
-      .filter((s) => s.bookId)
-      .map((s) => {
-        const num  = s.slotNum as number;
-        const book = bookMap[s.bookId as string];
-        return {
-          slotNum:  num,
-          name:     slotNames[String(num)] ?? null,
-          bookId:   s.bookId as string,
-          gameName: book?.gameName ?? "",
-          price:    book?.price ?? 0,
-        };
-      })
-      .sort((a, b) => a.slotNum - b.slotNum);
+    const slotNames      = (org?.slotNames      as Record<string, string>) ?? {};
+    const tierSlotCounts = (org?.tierSlotCounts  as Record<string, number>) ?? {};
+    const slotBudget     = (org?.slots           as number) ?? 0;
 
-    return Response.json({ slots });
+    return Response.json({ slotMap, bookMap, slotNames, tierSlotCounts, slotBudget });
   } catch (err) {
     return errResponse(err);
   }

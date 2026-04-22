@@ -94,11 +94,32 @@ function ValidationBadge({ check }: { check: ValidationCheck }) {
 
 // ── UploadZone ────────────────────────────────────────────────────────────────
 
-function UploadZone({ scanning, onFile, error, onRetry }: {
-  scanning: boolean; onFile: (f: File) => void; error?: string | null; onRetry?: () => void;
+function UploadZone({ scanning, onFiles, error, onRetry }: {
+  scanning: boolean; onFiles: (files: File[]) => void; error?: string | null; onRetry?: () => void;
 }) {
-  const ref = useRef<HTMLInputElement>(null);
-  if (error) {
+  const cameraRef  = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
+  const [photos, setPhotos] = useState<{ file: File; preview: string }[]>([]);
+
+  function addFiles(fileList: FileList | null) {
+    if (!fileList) return;
+    const remaining = 10 - photos.length;
+    if (remaining <= 0) return;
+    const added = Array.from(fileList).slice(0, remaining).map(f => ({
+      file: f, preview: URL.createObjectURL(f),
+    }));
+    setPhotos(prev => [...prev, ...added]);
+    onRetry?.();
+  }
+
+  function removePhoto(idx: number) {
+    setPhotos(prev => {
+      URL.revokeObjectURL(prev[idx].preview);
+      return prev.filter((_, i) => i !== idx);
+    });
+  }
+
+  if (error && photos.length === 0) {
     return (
       <div className="space-y-4">
         <div className="rounded-2xl p-5 bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-800/40 flex items-start gap-3">
@@ -113,41 +134,95 @@ function UploadZone({ scanning, onFile, error, onRetry }: {
             </ul>
           </div>
         </div>
-        <button onClick={() => { onRetry?.(); ref.current?.click(); }}
-          className="w-full flex items-center justify-center gap-2 border-2 border-dashed rounded-2xl py-4 text-sm font-medium text-primary hover:bg-primary/5 transition-colors">
-          <Camera className="size-4" /> Upload clearer image
-        </button>
-        <input ref={ref} type="file" accept="image/*" className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onFile(f); } }} />
+        <div className="grid grid-cols-2 gap-3">
+          <button onClick={() => { onRetry?.(); cameraRef.current?.click(); }}
+            className="flex items-center justify-center gap-2 border-2 border-dashed rounded-2xl py-4 text-sm font-medium text-primary hover:bg-primary/5 transition-colors">
+            <Camera className="size-4" /> Camera
+          </button>
+          <button onClick={() => { onRetry?.(); galleryRef.current?.click(); }}
+            className="flex items-center justify-center gap-2 border-2 border-dashed rounded-2xl py-4 text-sm font-medium text-primary hover:bg-primary/5 transition-colors">
+            <Upload className="size-4" /> Upload
+          </button>
+        </div>
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden"
+          onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+        <input ref={galleryRef} type="file" accept="image/*" multiple className="hidden"
+          onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
       </div>
     );
   }
+
   return (
-    <div>
-      <div onClick={() => !scanning && ref.current?.click()}
-        className={cn(
-          "border-2 border-dashed rounded-2xl p-10 text-center space-y-3 transition-colors",
-          scanning ? "cursor-default bg-muted/10" : "cursor-pointer hover:bg-primary/5 hover:border-primary/40"
-        )}>
-        {scanning ? (
-          <>
-            <span className="size-12 rounded-full border-4 border-primary border-t-transparent animate-spin block mx-auto" />
-            <p className="text-sm font-semibold">Scanning with AI…</p>
-            <p className="text-xs text-muted-foreground">Extracting every character from the receipt</p>
-          </>
-        ) : (
-          <>
-            <div className="size-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
-              <Upload className="size-7 text-primary" />
+    <div className="space-y-3">
+      {photos.length > 0 && (
+        <div className="grid grid-cols-3 gap-2">
+          {photos.map((p, i) => (
+            <div key={i} className="relative aspect-square rounded-xl overflow-hidden border bg-muted">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={p.preview} alt={`Photo ${i + 1}`} className="w-full h-full object-cover" />
+              <button type="button" onClick={() => removePhoto(i)}
+                className="absolute top-1 right-1 bg-black/60 rounded-full p-0.5 text-white hover:bg-black/80 transition-colors">
+                <X className="size-3" />
+              </button>
             </div>
-            <p className="font-semibold text-sm">Tap to take photo or upload</p>
-            <p className="text-xs text-muted-foreground">JPG, PNG, HEIC · Camera or gallery</p>
-            <span className="text-xs bg-primary/10 text-primary px-3 py-1 rounded-full font-medium">Choose photo</span>
-          </>
-        )}
-      </div>
-      <input ref={ref} type="file" accept="image/*" className="hidden"
-        onChange={(e) => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onFile(f); } }} />
+          ))}
+          {photos.length < 10 && !scanning && (
+            <button type="button" onClick={() => galleryRef.current?.click()}
+              className="aspect-square rounded-xl border-2 border-dashed flex items-center justify-center text-muted-foreground hover:border-primary hover:text-primary transition-colors">
+              <Upload className="size-5" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {scanning ? (
+        <div className="border-2 border-dashed rounded-2xl p-10 text-center space-y-3 bg-muted/10">
+          <span className="size-12 rounded-full border-4 border-primary border-t-transparent animate-spin block mx-auto" />
+          <p className="text-sm font-semibold">Scanning with AI…</p>
+          <p className="text-xs text-muted-foreground">Extracting every character from the receipt</p>
+        </div>
+      ) : photos.length === 0 ? (
+        <div className="border-2 border-dashed rounded-2xl p-8 text-center space-y-3">
+          <div className="size-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
+            <Upload className="size-7 text-primary" />
+          </div>
+          <p className="font-semibold text-sm">Add up to 10 photos</p>
+          <p className="text-xs text-muted-foreground">JPG, PNG, HEIC · Up to 10 images</p>
+          <div className="flex justify-center gap-3 pt-1">
+            <button type="button" onClick={() => cameraRef.current?.click()}
+              className="flex items-center gap-1.5 text-xs bg-primary/10 text-primary px-4 py-2 rounded-full font-medium hover:bg-primary/20 transition-colors">
+              <Camera className="size-3.5" /> Camera
+            </button>
+            <button type="button" onClick={() => galleryRef.current?.click()}
+              className="flex items-center gap-1.5 text-xs bg-primary/10 text-primary px-4 py-2 rounded-full font-medium hover:bg-primary/20 transition-colors">
+              <Upload className="size-3.5" /> Gallery
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-2">
+          <button type="button" disabled={scanning}
+            onClick={() => cameraRef.current?.click()}
+            className="flex items-center justify-center gap-1.5 border rounded-xl py-2.5 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all disabled:opacity-50">
+            <Camera className="size-4" />
+          </button>
+          <button type="button" disabled={scanning}
+            onClick={() => galleryRef.current?.click()}
+            className="flex items-center justify-center gap-1.5 border rounded-xl py-2.5 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all disabled:opacity-50">
+            <Upload className="size-4" />
+          </button>
+          <button type="button" disabled={scanning || photos.length === 0}
+            onClick={() => onFiles(photos.map(p => p.file))}
+            className="flex items-center justify-center gap-1.5 bg-primary text-primary-foreground rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50">
+            <ArrowRight className="size-4" /> Scan
+          </button>
+        </div>
+      )}
+
+      <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden"
+        onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+      <input ref={galleryRef} type="file" accept="image/*" multiple className="hidden"
+        onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
     </div>
   );
 }
@@ -570,7 +645,7 @@ function ShipmentDrawer({
                                 <button onClick={() => viewReceipt(b)} className="ml-auto text-primary hover:underline">Load</button>
                               </div>
                             )}
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 flex-wrap">
                               {receiptUrls[b.bookId] && (
                                 <a href={receiptUrls[b.bookId]} target="_blank" rel="noopener noreferrer"
                                   className="flex items-center gap-1.5 text-xs border rounded-lg px-3 py-1.5 hover:bg-accent transition-colors">
@@ -582,24 +657,38 @@ function ShipmentDrawer({
                                 receiptUploading === b.bookId ? "opacity-60" : "hover:bg-accent"
                               )}>
                                 {receiptUploading === b.bookId ? <Spinner className="size-3.5 animate-spin" /> : <Camera className="size-3.5" />}
-                                Replace
+                                Camera
+                                <input type="file" accept="image/*" capture="environment" className="hidden" disabled={!!receiptUploading}
+                                  onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadReceipt(b, f); }} />
+                              </label>
+                              <label className={cn(
+                                "flex items-center gap-1.5 text-xs border rounded-lg px-3 py-1.5 transition-colors cursor-pointer",
+                                receiptUploading === b.bookId ? "opacity-60" : "hover:bg-accent"
+                              )}>
+                                {receiptUploading === b.bookId ? <Spinner className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+                                Gallery
                                 <input type="file" accept="image/*" className="hidden" disabled={!!receiptUploading}
                                   onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadReceipt(b, f); }} />
                               </label>
                             </div>
                           </div>
+                        ) : receiptUploading === b.bookId ? (
+                          <div className="flex items-center justify-center gap-2 border-2 border-dashed rounded-xl py-3 text-xs font-medium opacity-60">
+                            <Spinner className="size-4 animate-spin" /> Uploading…
+                          </div>
                         ) : (
-                          <label className={cn(
-                            "flex items-center justify-center gap-2 border-2 border-dashed rounded-xl py-3 text-xs font-medium transition-colors cursor-pointer",
-                            receiptUploading === b.bookId ? "opacity-60" : "hover:border-primary/50 hover:bg-primary/5 text-primary"
-                          )}>
-                            {receiptUploading === b.bookId
-                              ? <><Spinner className="size-4 animate-spin" /> Uploading…</>
-                              : <><Upload className="size-4" /> Attach receipt</>
-                            }
-                            <input ref={receiptFileRef} type="file" accept="image/*" className="hidden" disabled={!!receiptUploading}
-                              onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadReceipt(b, f); }} />
-                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="flex items-center justify-center gap-1.5 border-2 border-dashed rounded-xl py-3 text-xs font-medium text-primary hover:border-primary/50 hover:bg-primary/5 transition-colors cursor-pointer">
+                              <Camera className="size-4" /> Camera
+                              <input type="file" accept="image/*" capture="environment" className="hidden" disabled={!!receiptUploading}
+                                onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadReceipt(b, f); }} />
+                            </label>
+                            <label className="flex items-center justify-center gap-1.5 border-2 border-dashed rounded-xl py-3 text-xs font-medium text-primary hover:border-primary/50 hover:bg-primary/5 transition-colors cursor-pointer">
+                              <Upload className="size-4" /> Upload
+                              <input ref={receiptFileRef} type="file" accept="image/*" className="hidden" disabled={!!receiptUploading}
+                                onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadReceipt(b, f); }} />
+                            </label>
+                          </div>
                         )}
                       </div>
 
@@ -822,24 +911,29 @@ export default function InventoryPage() {
 
   // ── Scan helpers ──────────────────────────────────────────────────────────
 
-  async function uploadAndScan(file: File, endpoint: string): Promise<Record<string, unknown> | null> {
+  async function uploadAndScan(files: File[], endpoint: string): Promise<Record<string, unknown> | null> {
     setScanError(null);
     setScanning(true);
     try {
-      const pr = await fetch("/api/upload/presign", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, contentType: file.type }),
-      });
-      if (!pr.ok) throw new Error("Upload failed");
-      const { url, key } = await pr.json();
-      await fetch(url, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
-      const sr = await fetch(endpoint, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key }),
-      });
-      if (!sr.ok) { setScanError("Could not extract data. Try a clearer photo."); return null; }
-      const { data } = await sr.json();
-      return data as Record<string, unknown>;
+      for (const file of files) {
+        const pr = await fetch("/api/upload/presign", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, contentType: file.type }),
+        });
+        if (!pr.ok) continue;
+        const { url, key } = await pr.json();
+        await fetch(url, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+        const sr = await fetch(endpoint, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key }),
+        });
+        if (sr.ok) {
+          const { data } = await sr.json();
+          return data as Record<string, unknown>;
+        }
+      }
+      setScanError("Could not extract data from any photo. Try clearer images.");
+      return null;
     } catch (err: unknown) {
       setScanError((err as Error).message ?? "Upload failed");
       return null;
@@ -938,17 +1032,17 @@ export default function InventoryPage() {
     return out;
   }
 
-  async function handleDeliveryScan(file: File) {
-    const data = await uploadAndScan(file, "/api/receipt/scan-delivery");
+  async function handleDeliveryScan(files: File[]) {
+    const data = await uploadAndScan(files, "/api/receipt/scan-delivery");
     if (!data) return;
     setDeliveryData(data);
     setDeliveryChecks(validateDelivery(data));
     setStep("delivery-result");
   }
 
-  async function handleOrderScan(file: File) {
+  async function handleOrderScan(files: File[]) {
     if (!deliveryData) return;
-    const data = await uploadAndScan(file, "/api/receipt/scan-order");
+    const data = await uploadAndScan(files, "/api/receipt/scan-order");
     if (!data) return;
     setOrderData(data);
     setOrderChecks(validateOrder(data));
@@ -1250,7 +1344,7 @@ export default function InventoryPage() {
                     <p className="font-semibold">Step 1: Instant Ticket Delivery Receipt</p>
                     <p className="text-xs mt-1 text-blue-700 dark:text-blue-400">The physical receipt from the Ohio Lottery shipment. Contains the list of all books in this delivery.</p>
                   </div>
-                  <UploadZone scanning={scanning} onFile={handleDeliveryScan} error={scanError} onRetry={() => setScanError(null)} />
+                  <UploadZone scanning={scanning} onFiles={handleDeliveryScan} error={scanError} onRetry={() => setScanError(null)} />
                 </div>
               )}
 
@@ -1324,7 +1418,7 @@ export default function InventoryPage() {
                     <p className="font-semibold">Step 2: Confirm Order Receipt</p>
                     <p className="text-xs mt-1 text-emerald-700 dark:text-emerald-400">The terminal receipt confirming the book order — printed by the in-store lottery terminal.</p>
                   </div>
-                  <UploadZone scanning={scanning} onFile={handleOrderScan} error={scanError} onRetry={() => setScanError(null)} />
+                  <UploadZone scanning={scanning} onFiles={handleOrderScan} error={scanError} onRetry={() => setScanError(null)} />
                 </div>
               )}
 

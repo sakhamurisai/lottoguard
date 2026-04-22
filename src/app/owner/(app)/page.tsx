@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import {
   ArrowClockwise, Warning, CheckCircle, Package,
   Users, BookOpen, Ticket, TrendUp, ArrowRight,
-  X, SealWarning,
+  X, SealWarning, Bell,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/components/auth-provider";
 import { cn } from "@/lib/utils";
@@ -28,6 +28,18 @@ type Analytics = {
   soldByTier: SoldByTier;
   trend: TrendPoint[];
   warnings: AnalyticsWarning[];
+};
+
+type Notif = {
+  SK:        string;
+  notifId:   string;
+  type:      string;
+  severity:  "emergency" | "important" | "warning" | "info";
+  message:   string;
+  empName?:  string;
+  detail?:   Record<string, unknown>;
+  read:      boolean;
+  createdAt: string;
 };
 
 const PRICE_TIERS = [1, 2, 5, 10, 20, 30, 50];
@@ -54,19 +66,55 @@ export default function OwnerDashboard() {
   const [data,       setData]       = useState<Analytics | null>(null);
   const [loading,    setLoading]    = useState(true);
   const [dismissed,  setDismissed]  = useState<Set<string>>(new Set());
+  const [notifs,     setNotifs]     = useState<Notif[]>([]);
+  const [ackedNotifs,setAckedNotifs]= useState<Set<string>>(new Set());
 
   async function load() {
     setLoading(true);
-    const r = await fetch("/api/analytics");
-    if (r.ok) setData(await r.json());
+    const [analyticsRes, notifRes] = await Promise.all([
+      fetch("/api/analytics"),
+      fetch("/api/notifications"),
+    ]);
+    if (analyticsRes.ok) setData(await analyticsRes.json());
+    if (notifRes.ok) {
+      const nd = await notifRes.json() as { notifications: Notif[] };
+      setNotifs(nd.notifications ?? []);
+    }
     setLoading(false);
+  }
+
+  async function acknowledgeNotif(sk: string) {
+    setAckedNotifs((prev) => new Set([...prev, sk]));
+    await fetch("/api/notifications", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sk }),
+    });
+  }
+
+  async function acknowledgeAll() {
+    const unread = notifs.filter((n) => !n.read && !ackedNotifs.has(n.SK));
+    setAckedNotifs((prev) => new Set([...prev, ...unread.map((n) => n.SK)]));
+    if (unread.length > 0) {
+      await fetch("/api/notifications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+    }
   }
 
   useEffect(() => {
     if (!authLoading && user) load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user]);
 
   const warnings = (data?.warnings ?? []).filter((w) => !dismissed.has(w.type));
+
+  // Split notifications by severity — emergency ones can never be silently dismissed
+  const emergencyNotifs = notifs.filter((n) => n.severity === "emergency" && !ackedNotifs.has(n.SK));
+  const importantNotifs = notifs.filter((n) => n.severity === "important" && !n.read && !ackedNotifs.has(n.SK));
+  const unreadCount     = notifs.filter((n) => !n.read && !ackedNotifs.has(n.SK)).length;
   const s        = data?.summary;
 
   // Bar chart helpers
@@ -90,7 +138,15 @@ export default function OwnerDashboard() {
           <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
           <p className="text-sm text-muted-foreground mt-0.5">{user?.orgName ?? "Loading…"}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          {unreadCount > 0 && (
+            <div className="relative">
+              <Bell weight="fill" className="size-5 text-muted-foreground" />
+              <span className="absolute -top-1 -right-1 size-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                {unreadCount > 9 ? "9+" : unreadCount}
+              </span>
+            </div>
+          )}
           <button onClick={load} className="p-2 border rounded-xl hover:bg-muted transition-colors text-muted-foreground">
             <ArrowClockwise className={cn("size-4", loading && "animate-spin")} />
           </button>
@@ -101,7 +157,65 @@ export default function OwnerDashboard() {
         </div>
       </div>
 
-      {/* Warning notifications */}
+      {/* Emergency notifications — persistent, require acknowledgement */}
+      {emergencyNotifs.length > 0 && (
+        <div className="space-y-2">
+          {emergencyNotifs.map((n) => (
+            <div key={n.SK}
+              className="flex items-start gap-3 px-4 py-4 rounded-xl border-2 border-red-400 bg-red-50 text-red-900 text-sm shadow-sm">
+              <div className="flex items-center gap-2 shrink-0 mt-0.5">
+                <span className="size-2.5 rounded-full bg-red-500 animate-pulse" />
+                <SealWarning weight="fill" className="size-5 text-red-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-red-700 text-xs uppercase tracking-wide mb-1">⚠ Emergency Alert</p>
+                <p className="leading-snug font-medium">{n.message}</p>
+                {n.empName && <p className="text-xs text-red-600/70 mt-1">Employee: {n.empName}</p>}
+                {(n.detail?.note as string | undefined) && (
+                  <p className="text-xs mt-1 italic text-red-700/80">Note: {n.detail!.note as string}</p>
+                )}
+                <p className="text-xs text-red-600/50 mt-1">{new Date(n.createdAt).toLocaleString()}</p>
+              </div>
+              <button
+                onClick={() => acknowledgeNotif(n.SK)}
+                className="shrink-0 px-3 py-1.5 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap">
+                Acknowledge
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Important notifications */}
+      {importantNotifs.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+              <Bell className="size-3.5" />Important Alerts ({importantNotifs.length})
+            </p>
+            <button onClick={acknowledgeAll}
+              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2">
+              Mark all read
+            </button>
+          </div>
+          {importantNotifs.map((n) => (
+            <div key={n.SK}
+              className="flex items-start gap-3 px-4 py-3 rounded-xl border border-orange-200 bg-orange-50 text-orange-900 text-sm">
+              <Warning weight="fill" className="size-4 shrink-0 mt-0.5 text-orange-500" />
+              <div className="flex-1 min-w-0">
+                <p className="leading-snug">{n.message}</p>
+                <p className="text-xs text-orange-600/60 mt-0.5">{new Date(n.createdAt).toLocaleString()}</p>
+              </div>
+              <button onClick={() => acknowledgeNotif(n.SK)}
+                className="shrink-0 opacity-50 hover:opacity-100 transition-opacity">
+                <X className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Analytics warnings */}
       {!loading && warnings.length > 0 && (
         <div className="space-y-2">
           {warnings.map((w) => (

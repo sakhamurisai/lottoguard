@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowClockwise, UploadSimple, X, CheckCircle,
-  Warning, Spinner, FileMagnifyingGlass,
+  Warning, Spinner, FileMagnifyingGlass, Camera, Upload, ArrowRight,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 
@@ -67,52 +67,71 @@ interface ReceiptModalProps {
 }
 
 function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [state, setState] = useState<ModalState>({ type: "idle" });
+  const cameraRef  = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
+  const [state,    setState]  = useState<ModalState>({ type: "idle" });
+  const [photos,   setPhotos] = useState<{ file: File; preview: string }[]>([]);
   const [dragOver, setDragOver] = useState(false);
 
-  async function handleFile(file: File) {
+  function addFiles(fileList: FileList | null) {
+    if (!fileList) return;
+    const remaining = 10 - photos.length;
+    if (remaining <= 0) return;
+    const added = Array.from(fileList).slice(0, remaining).map(f => ({
+      file: f, preview: URL.createObjectURL(f),
+    }));
+    setPhotos(prev => [...prev, ...added]);
+  }
+
+  function removePhoto(idx: number) {
+    setPhotos(prev => {
+      URL.revokeObjectURL(prev[idx].preview);
+      return prev.filter((_, i) => i !== idx);
+    });
+  }
+
+  async function handleScan() {
+    if (photos.length === 0) return;
     setState({ type: "uploading" });
     try {
-      // 1. Get presigned URL
-      const presignRes = await fetch("/api/upload/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, contentType: file.type }),
-      });
-      if (!presignRes.ok) throw new Error("Failed to get upload URL");
-      const { url, key } = await presignRes.json() as { url: string; key: string };
+      for (const { file } of photos) {
+        const presignRes = await fetch("/api/upload/presign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, contentType: file.type }),
+        });
+        if (!presignRes.ok) continue;
+        const { url, key } = await presignRes.json() as { url: string; key: string };
+        const uploadRes = await fetch(url, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+        if (!uploadRes.ok) continue;
 
-      // 2. Upload to S3
-      const uploadRes = await fetch(url, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
-      if (!uploadRes.ok) throw new Error("Upload failed");
+        setState({ type: "scanning" });
+        const scanRes = await fetch("/api/receipt/scan-action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key }),
+        });
+        if (!scanRes.ok) continue;
+        const { data } = await scanRes.json() as { data: ScanResult };
 
-      // 3. Scan receipt
-      setState({ type: "scanning" });
-      const scanRes = await fetch("/api/receipt/scan-action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key }),
-      });
-      if (!scanRes.ok) throw new Error("Could not read receipt");
-      const { data } = await scanRes.json() as { data: ScanResult };
+        const warnings: string[] = [];
+        const errors:   string[] = [];
 
-      // 4. Cross-validate
-      const warnings: string[] = [];
-      const errors:   string[] = [];
+        const expectedAction = action === "activate" ? "activate" : action === "deactivate" ? "deactivate" : "settle";
+        if (data.action && data.action !== "unknown" && data.action !== expectedAction) {
+          errors.push(`Receipt says "${data.action}" but you are trying to ${action} this book.`);
+        }
 
-      const expectedAction = action === "activate" ? "activate" : action === "deactivate" ? "deactivate" : "settle";
-      if (data.action && data.action !== "unknown" && data.action !== expectedAction) {
-        errors.push(`Receipt says "${data.action}" but you are trying to ${action} this book.`);
+        const normalizedExtracted = (data.bookNumber ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+        const normalizedBook      = (book.pack ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+        if (normalizedExtracted && normalizedBook && normalizedExtracted !== normalizedBook) {
+          warnings.push(`Receipt book # (${data.bookNumber}) differs from selected book pack (${book.pack}). Verify before confirming.`);
+        }
+
+        setState({ type: "result", scan: data, warnings, errors });
+        return;
       }
-
-      const normalizedExtracted = (data.bookNumber ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
-      const normalizedBook      = (book.pack ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
-      if (normalizedExtracted && normalizedBook && normalizedExtracted !== normalizedBook) {
-        warnings.push(`Receipt book # (${data.bookNumber}) differs from selected book pack (${book.pack}). Verify before confirming.`);
-      }
-
-      setState({ type: "result", scan: data, warnings, errors });
+      setState({ type: "result", scan: { action: "unknown", bookNumber: null, gameId: null, gameName: null, date: null, terminalNum: null, retailerNum: null, status: null }, warnings: [], errors: ["Could not read any of the uploaded receipts. Try clearer photos."] });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Unexpected error";
       setState({ type: "result", scan: { action: "unknown", bookNumber: null, gameId: null, gameName: null, date: null, terminalNum: null, retailerNum: null, status: null }, warnings: [], errors: [msg] });
@@ -122,8 +141,7 @@ function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
+    addFiles(e.dataTransfer.files);
   }
 
   const isIdle     = state.type === "idle";
@@ -147,29 +165,81 @@ function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
           </button>
         </div>
 
-        <div className="p-6 space-y-5">
+        <div className="p-6 space-y-4">
           {/* Upload zone */}
           {(isIdle || hasResult) && (
-            <div>
-              <p className="text-sm font-medium mb-3">
+            <div className="space-y-3">
+              <p className="text-sm font-medium">
                 {isIdle ? "Upload terminal receipt (optional)" : "Re-scan receipt"}
               </p>
-              <div
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={onDrop}
-                onClick={() => fileRef.current?.click()}
-                className={cn(
-                  "border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors",
-                  dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/30"
-                )}
-              >
-                <UploadSimple className="size-6 text-muted-foreground mx-auto mb-2" />
-                <p className="text-sm text-muted-foreground">Drag & drop or click to upload</p>
-                <p className="text-xs text-muted-foreground mt-1">JPG, PNG, WebP, HEIC</p>
-                <input ref={fileRef} type="file" accept="image/*" className="hidden"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
-              </div>
+
+              {/* Photo grid */}
+              {photos.length > 0 && (
+                <div className="grid grid-cols-4 gap-2">
+                  {photos.map((p, i) => (
+                    <div key={i} className="relative aspect-square rounded-xl overflow-hidden border bg-muted">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={p.preview} alt={`Photo ${i + 1}`} className="w-full h-full object-cover" />
+                      <button type="button" onClick={() => removePhoto(i)}
+                        className="absolute top-0.5 right-0.5 bg-black/60 rounded-full p-0.5 text-white hover:bg-black/80 transition-colors">
+                        <X className="size-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {photos.length < 10 && (
+                    <button type="button" onClick={() => galleryRef.current?.click()}
+                      className="aspect-square rounded-xl border-2 border-dashed flex items-center justify-center text-muted-foreground hover:border-primary hover:text-primary transition-colors">
+                      <Upload className="size-4" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {photos.length === 0 ? (
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={onDrop}
+                  className={cn(
+                    "border-2 border-dashed rounded-2xl p-6 text-center transition-colors space-y-3",
+                    dragOver ? "border-primary bg-primary/5" : "border-border"
+                  )}
+                >
+                  <UploadSimple className="size-6 text-muted-foreground mx-auto" />
+                  <p className="text-sm text-muted-foreground">Drag & drop or choose photos (up to 10)</p>
+                  <p className="text-xs text-muted-foreground">JPG, PNG, WebP, HEIC</p>
+                  <div className="flex justify-center gap-3">
+                    <button type="button" onClick={() => cameraRef.current?.click()}
+                      className="flex items-center gap-1.5 text-xs bg-primary/10 text-primary px-4 py-2 rounded-full font-medium hover:bg-primary/20 transition-colors">
+                      <Camera className="size-3.5" /> Camera
+                    </button>
+                    <button type="button" onClick={() => galleryRef.current?.click()}
+                      className="flex items-center gap-1.5 text-xs bg-primary/10 text-primary px-4 py-2 rounded-full font-medium hover:bg-primary/20 transition-colors">
+                      <Upload className="size-3.5" /> Gallery
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  <button type="button" onClick={() => cameraRef.current?.click()}
+                    className="flex items-center justify-center gap-1.5 border rounded-xl py-2.5 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all">
+                    <Camera className="size-4" />
+                  </button>
+                  <button type="button" onClick={() => galleryRef.current?.click()}
+                    className="flex items-center justify-center gap-1.5 border rounded-xl py-2.5 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all">
+                    <Upload className="size-4" />
+                  </button>
+                  <button type="button" onClick={handleScan} disabled={photos.length === 0}
+                    className="flex items-center justify-center gap-1.5 bg-primary text-primary-foreground rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50">
+                    <ArrowRight className="size-4" /> Scan
+                  </button>
+                </div>
+              )}
+
+              <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden"
+                onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+              <input ref={galleryRef} type="file" accept="image/*" multiple className="hidden"
+                onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
             </div>
           )}
 
@@ -186,21 +256,18 @@ function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
           {/* Scan result */}
           {hasResult && (
             <div className="space-y-3">
-              {/* Errors */}
               {state.errors.map((e, i) => (
                 <div key={i} className="flex gap-2 items-start p-3 bg-destructive/8 border border-destructive/20 rounded-xl text-sm text-destructive">
                   <X className="size-4 shrink-0 mt-0.5" />
                   {e}
                 </div>
               ))}
-              {/* Warnings */}
               {state.warnings.map((w, i) => (
                 <div key={i} className="flex gap-2 items-start p-3 bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800/40 rounded-xl text-sm text-amber-800 dark:text-amber-300">
                   <Warning className="size-4 shrink-0 mt-0.5" />
                   {w}
                 </div>
               ))}
-              {/* Extracted info */}
               {!hasErrors && (
                 <div className="flex gap-2 items-start p-3 bg-emerald-50 border border-emerald-200 dark:bg-emerald-900/20 dark:border-emerald-800/40 rounded-xl text-sm text-emerald-800 dark:text-emerald-300">
                   <CheckCircle weight="fill" className="size-4 shrink-0 mt-0.5" />
@@ -215,7 +282,6 @@ function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
             </div>
           )}
 
-          {/* Scan icon for scanning state */}
           {state.type === "confirming" && (
             <div className="flex flex-col items-center gap-3 py-6">
               <Spinner className="size-8 text-primary animate-spin" />
@@ -230,7 +296,6 @@ function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
             className="flex-1 border rounded-xl py-2.5 text-sm font-medium hover:bg-accent transition-colors disabled:opacity-50">
             Cancel
           </button>
-          {/* Skip receipt / Confirm */}
           {isIdle && (
             <button onClick={onConfirm}
               className={cn("flex-1 rounded-xl py-2.5 text-sm font-medium transition-colors", ACTION_COLOR[action])}>
