@@ -6,7 +6,7 @@ import {
   Camera, Keyboard, AlertTriangle, X,
   ArrowRight, BarChart2, LayoutGrid, Bell,
   Upload, Eye, RotateCcw, BookOpen,
-  CheckSquare, Square, RefreshCw,
+  RefreshCw,
 } from "lucide-react";
 import { useAuth } from "@/components/auth-provider";
 import { cn } from "@/lib/utils";
@@ -36,12 +36,24 @@ type Shift = {
 };
 
 type SlotInfo = {
-  slotNum: number;
-  bookId:  string | null;
-  gameName?: string;
-  pack?:   string;
-  price?:  number;
+  slotNum:      number;
+  bookId:       string | null;
+  gameId?:      string;
+  gameName?:    string;
+  pack?:        string;
+  price?:       number;
   ticketStart?: number;
+  status?:      string;
+};
+
+type PendingSlotEntry = {
+  serial:      string;
+  bookId:      string;
+  gameId?:     string;
+  gameName?:   string;
+  price?:      number;
+  ticketStart: number;
+  bookNum?:    string;
 };
 
 type ScannedEntry = {
@@ -455,35 +467,229 @@ function ReceiptUploader({ type, onSuccess, onSkip }: ReceiptUploaderProps) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Live slot table
+// Employee slot grid — mirrors manager layout, read-only with status badges
 // ─────────────────────────────────────────────────────────────────────────────
 
-function LiveSlotTable({ slots, scanned }: { slots: SlotInfo[]; scanned: ScannedEntry[] }) {
-  const scannedSlots = new Set(scanned.map((s) => s.slotNum));
-  const occupiedSlots = slots.filter((s) => s.bookId);
-  if (occupiedSlots.length === 0) return null;
+function EmployeeSlotGrid({
+  slots, slotNames, tierCounts, scanned, onSoldOut,
+}: {
+  slots:      SlotInfo[];
+  slotNames:  Record<string, string>;
+  tierCounts: Record<string, number>;
+  scanned:    ScannedEntry[];
+  onSoldOut?: (slotNum: number, bookId: string) => void;
+}) {
+  const scannedSet = new Set(scanned.map(s => s.slotNum));
+  const slotMap: Record<number, SlotInfo> = {};
+  for (const s of slots) slotMap[s.slotNum] = s;
+
+  // If org has no tierCounts, derive minimum counts from occupied slots
+  const effectiveCounts = Object.values(tierCounts).some(c => c > 0)
+    ? tierCounts
+    : Object.fromEntries(
+        TIERS.map((t, ti) => {
+          const colMax = slots
+            .filter(s => s.bookId)
+            .filter(s => Math.floor((s.slotNum - 1) / MAX_PER_TIER) === ti)
+            .reduce((m, s) => Math.max(m, (s.slotNum - 1) % MAX_PER_TIER + 1), 0);
+          return [String(t.price), colMax];
+        })
+      );
+
+  const hasAny = Object.values(effectiveCounts).some(c => c > 0);
+  if (!hasAny) return (
+    <p className="text-xs text-muted-foreground py-3 text-center">No slots configured by manager.</p>
+  );
 
   return (
-    <div className="border rounded-2xl overflow-hidden text-xs">
-      <div className="grid grid-cols-4 bg-muted px-3 py-2 font-semibold text-muted-foreground">
-        <span>Slot</span><span className="col-span-2">Book</span><span className="text-center">Status</span>
-      </div>
-      <div className="divide-y max-h-48 overflow-y-auto">
-        {occupiedSlots.map((sl) => {
-          const matched = scannedSlots.has(sl.slotNum);
-          return (
-            <div key={sl.slotNum} className={cn("grid grid-cols-4 px-3 py-2 items-center", matched && "bg-emerald-50/60")}>
-              <span className="font-mono font-bold">#{sl.slotNum}</span>
-              <span className="col-span-2 truncate text-muted-foreground">{sl.pack ?? sl.bookId?.slice(0, 8)}</span>
-              <span className="text-center">
-                {matched
-                  ? <CheckSquare className="size-4 text-emerald-600 mx-auto" />
-                  : <Square className="size-4 text-muted-foreground mx-auto" />
-                }
-              </span>
+    <div className="space-y-2.5">
+      {TIERS.map((tier, ti) => {
+        const count = effectiveCounts[String(tier.price)] ?? 0;
+        if (count === 0) return null;
+        return (
+          <div key={tier.price} className="flex items-start gap-2">
+            {/* Row label */}
+            <div className={cn(
+              "rounded-xl border px-2 py-2.5 flex flex-col items-center justify-center gap-0.5 w-12 shrink-0",
+              tier.headerBg, tier.border
+            )}>
+              <span className={cn("text-sm font-black leading-none", tier.color)}>{tier.label}</span>
+              <span className="text-[8px] text-muted-foreground">ticket</span>
             </div>
-          );
-        })}
+
+            {/* Slot cards */}
+            <div className="flex-1 flex flex-wrap gap-1.5">
+              {Array.from({ length: count }, (_, ci) => {
+                const sn         = slotNumFromTier(ti, ci);
+                const slot       = slotMap[sn];
+                const hasBook    = !!slot?.bookId;
+                const isSoldOut  = slot?.status === "settled";
+                const isInactive = slot?.status === "inactive";
+                const isScanned  = scannedSet.has(sn);
+                const customName = slotNames[String(sn)] ?? "";
+
+                return (
+                  <div key={ci} className="relative">
+                    <div
+                      style={FOLD}
+                      className={cn(
+                        "w-[96px] min-h-[96px] rounded-xl border p-2 space-y-1",
+                        hasBook && !isSoldOut ? cn(tier.bg, tier.border) :
+                        isSoldOut             ? "bg-gray-50 border-gray-200"       :
+                        "bg-background border-dashed border-muted-foreground/20",
+                        isScanned && "ring-2 ring-emerald-500 ring-offset-1"
+                      )}
+                    >
+                      {/* Slot # + custom name */}
+                      <div className="flex items-center justify-between gap-0.5">
+                        <span className="text-[8px] font-bold text-muted-foreground/60">#{sn}</span>
+                        {customName && (
+                          <span className={cn("text-[7px] font-bold uppercase truncate max-w-[54px]", tier.color)}>
+                            {customName}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Content */}
+                      {hasBook ? (
+                        <div className="space-y-0.5">
+                          <p className="text-[9px] font-semibold leading-tight line-clamp-2">
+                            {slot.gameName ?? `Game ${slot.gameId ?? ""}`}
+                          </p>
+                          <p className="text-[8px] text-muted-foreground font-mono">{slot.pack}</p>
+
+                          {/* Status badge */}
+                          <div className={cn(
+                            "inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[7px] font-bold mt-0.5",
+                            isSoldOut  ? "bg-gray-100 text-gray-500"    :
+                            isInactive ? "bg-amber-50 text-amber-700"   :
+                            "bg-emerald-50 text-emerald-700"
+                          )}>
+                            <span className={cn("size-1 rounded-full",
+                              isSoldOut  ? "bg-gray-400"    :
+                              isInactive ? "bg-amber-500"   :
+                              "bg-emerald-500"
+                            )} />
+                            {isSoldOut ? "Sold Out" : isInactive ? "Inactive" : "Active"}
+                          </div>
+
+                          {/* Sold Out action button (active shift only) */}
+                          {onSoldOut && !isSoldOut && slot.bookId && (
+                            <button
+                              onClick={() => onSoldOut(sn, slot.bookId!)}
+                              className="w-full mt-0.5 text-[7px] px-1 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded hover:bg-amber-100 transition-colors font-semibold leading-tight"
+                            >
+                              Sold Out
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-10">
+                          <span className="text-[8px] text-muted-foreground/40">Empty</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Scanned check overlay */}
+                    {isScanned && (
+                      <div className="absolute top-0.5 right-0.5 drop-shadow-sm">
+                        <CheckCircle className="size-3.5 text-emerald-600" />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slot-assign modal — shown when a book has no manager-assigned slot
+// ─────────────────────────────────────────────────────────────────────────────
+
+function SlotAssignModal({
+  entry, slots, slotNames, onAssign, onSkip, onClose,
+}: {
+  entry:     PendingSlotEntry;
+  slots:     SlotInfo[];
+  slotNames: Record<string, string>;
+  onAssign:  (slotNum: number) => void;
+  onSkip:    () => void;
+  onClose:   () => void;
+}) {
+  const emptySlots = slots.filter(s => !s.bookId).sort((a, b) => a.slotNum - b.slotNum);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4">
+      <div className="bg-background border rounded-3xl w-full max-w-sm shadow-2xl p-5 space-y-4 max-h-[80vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5 mb-1">
+              <div className="size-5 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="size-3 text-red-600" />
+              </div>
+              <p className="font-bold text-sm text-red-700">Slot Not Assigned — Priority Error</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Book <span className="font-mono font-semibold">{entry.bookNum ?? entry.bookId.slice(0, 8)}</span>
+              {entry.gameName ? ` · ${entry.gameName}` : ""} has no slot assigned by manager.
+              A priority error will be sent immediately.
+            </p>
+          </div>
+          <button onClick={onClose} className="shrink-0 p-1 text-muted-foreground hover:text-foreground">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {/* Empty slot list */}
+        <div className="flex-1 overflow-y-auto space-y-1.5 min-h-0">
+          <p className="text-xs font-semibold text-muted-foreground">Select a slot to self-assign:</p>
+          {emptySlots.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-6 text-center">No empty slots available.</p>
+          ) : (
+            emptySlots.map(sl => {
+              const tierIdx  = Math.floor((sl.slotNum - 1) / MAX_PER_TIER);
+              const slotTier = TIERS[tierIdx];
+              const name     = slotNames[String(sl.slotNum)] ?? "";
+              const isMatch  = slotTier?.price === entry.price;
+              return (
+                <button
+                  key={sl.slotNum}
+                  onClick={() => onAssign(sl.slotNum)}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left hover:bg-muted/50 transition-colors",
+                    isMatch ? "border-primary/40 bg-primary/5" : ""
+                  )}
+                >
+                  <div className={cn(
+                    "size-8 rounded-lg border flex items-center justify-center text-[10px] font-black shrink-0",
+                    slotTier ? cn(slotTier.bg, slotTier.color, slotTier.border) : "bg-muted text-muted-foreground"
+                  )}>
+                    {slotTier?.label ?? `#${sl.slotNum}`}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold">Slot #{sl.slotNum}</p>
+                    {name && <p className="text-xs text-muted-foreground truncate">{name}</p>}
+                    {isMatch && <p className="text-[10px] text-primary font-medium">Matching tier</p>}
+                  </div>
+                  <ArrowRight className="size-4 text-muted-foreground shrink-0" />
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        <button
+          onClick={onSkip}
+          className="shrink-0 w-full border rounded-2xl py-2.5 text-sm text-muted-foreground hover:bg-muted/40 transition-colors"
+        >
+          Add without slot (auto-assign at clock-in)
+        </button>
       </div>
     </div>
   );
@@ -497,10 +703,12 @@ export default function EmployeeDashboard() {
   const { user } = useAuth();
 
   // ── Data ──────────────────────────────────────────────────────────────────
-  const [shifts,   setShifts]   = useState<Shift[]>([]);
-  const [active,   setActive]   = useState<Shift | null>(null);
-  const [slots,    setSlots]    = useState<SlotInfo[]>([]);
-  const [loading,  setLoading]  = useState(true);
+  const [shifts,     setShifts]     = useState<Shift[]>([]);
+  const [active,     setActive]     = useState<Shift | null>(null);
+  const [slots,      setSlots]      = useState<SlotInfo[]>([]);
+  const [slotNames,  setSlotNames]  = useState<Record<string, string>>({});
+  const [tierCounts, setTierCounts] = useState<Record<string, number>>({});
+  const [loading,    setLoading]    = useState(true);
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [tab,        setTab]        = useState<Tab>("shift");
@@ -510,8 +718,10 @@ export default function EmployeeDashboard() {
   const [manualErr,  setManualErr]  = useState("");
   const [scanned,    setScanned]    = useState<ScannedEntry[]>([]);
   const [scanError,  setScanError]  = useState("");
-  const [verifying,  setVerifying]  = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [verifying,        setVerifying]        = useState(false);
+  const [submitting,       setSubmitting]       = useState(false);
+  const [detectedScanMode, setDetectedScanMode] = useState<"sequential" | "random" | null>(null);
+  const [noSlotEntry,      setNoSlotEntry]      = useState<PendingSlotEntry | null>(null);
   const [summary,    setSummary]    = useState<{ finalCalc: number; drawerCash: number; discrepancySeverity: string; diff: number } | null>(null);
 
   // Clock-out state
@@ -534,13 +744,26 @@ export default function EmployeeDashboard() {
     if (r.ok) {
       const data = await r.json() as {
         slotMap: Record<number, string | null>;
-        bookMap: Record<string, { gameName: string; pack: string; price: number; status: string }>;
+        bookMap: Record<string, { gameName: string; pack: string; price: number; status: string; ticketStart?: number; gameId?: string }>;
+        slotNames:      Record<string, string>;
+        tierSlotCounts: Record<string, number>;
       };
       const list: SlotInfo[] = Object.entries(data.slotMap).map(([n, bookId]) => {
         const bk = bookId ? data.bookMap[bookId] : undefined;
-        return { slotNum: Number(n), bookId, gameName: bk?.gameName, pack: bk?.pack, price: bk?.price };
+        return {
+          slotNum:     Number(n),
+          bookId,
+          gameId:      bk?.gameId,
+          gameName:    bk?.gameName,
+          pack:        bk?.pack,
+          price:       bk?.price,
+          ticketStart: bk?.ticketStart,
+          status:      bk?.status,
+        };
       });
       setSlots(list.sort((a, b) => a.slotNum - b.slotNum));
+      setSlotNames(data.slotNames      ?? {});
+      setTierCounts(data.tierSlotCounts ?? {});
     }
   }, []);
 
@@ -592,20 +815,20 @@ export default function EmployeeDashboard() {
       const data = await res.json() as VerifyResult;
 
       if (!data.valid) {
-        // "no_slot" is non-blocking — show warning but still allow adding
         if (data.reason === "no_slot") {
-          const ticketNum = extractTicketNum(serial) ?? 0;
-          setScanned((prev) => [...prev, {
+          // Show slot-picker modal — employee must assign a slot (PRIORITY ERROR path)
+          const parts = serial.replace(/\s/g, "").split("-");
+          setNoSlotEntry({
             serial,
-            ticketStart: ticketNum,
-            slotNum:     0,
             bookId:      data.bookId ?? "",
+            gameId:      parts[0],
             gameName:    data.gameName,
             price:       data.price,
-          }]);
-          setScanError(`⚠ ${data.message}`);
+            ticketStart: data.inventoryStart ?? extractTicketNum(serial) ?? 0,
+            bookNum:     parts[1],
+          });
         } else {
-          // Hard block: not found, settled, wrong ticket
+          // Hard block: not_found, settled, wrong_ticket
           setScanError(data.message);
           addAlert("error", data.message);
         }
@@ -613,14 +836,29 @@ export default function EmployeeDashboard() {
         return;
       }
 
-      setScanned((prev) => [...prev, {
+      const newEntry: ScannedEntry = {
         serial,
         ticketStart: data.ticketStart,
         slotNum:     data.slotNum,
         bookId:      data.bookId,
         gameName:    data.gameName,
         price:       data.price,
-      }]);
+      };
+      setScanned((prev) => {
+        const next = [...prev, newEntry];
+        // Detect sequential vs random mode from ticket numbers
+        if (next.length >= 2) {
+          const tickets = next.map(e => e.ticketStart);
+          let seq = true;
+          for (let i = 1; i < tickets.length; i++) {
+            if (tickets[i] <= tickets[i - 1]) { seq = false; break; }
+          }
+          setDetectedScanMode(seq ? "sequential" : "random");
+        } else {
+          setDetectedScanMode(null);
+        }
+        return next;
+      });
       setScanMode("choose");
       setManualVal("");
     } catch {
@@ -722,6 +960,61 @@ export default function EmployeeDashboard() {
     }
   }
 
+  // ── No-slot entry: employee assigns their own slot ────────────────────────
+
+  async function handleNoSlotAssign(slotNum: number) {
+    if (!noSlotEntry) return;
+    // Fire-and-forget PRIORITY ERROR notification to manager
+    fetch("/api/shifts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action:   "notify_slot_change",
+        slotNum,
+        priority: true,
+        message:  `PRIORITY ERROR: Book ${noSlotEntry.bookNum ?? noSlotEntry.bookId.slice(0, 8)} (${noSlotEntry.gameName ?? `Game ${noSlotEntry.gameId ?? ""}`}) was scanned but has no slot assigned by manager. Employee self-assigned to Slot #${slotNum}.`,
+      }),
+    }).catch(() => {});
+
+    const entry: ScannedEntry = {
+      serial:      noSlotEntry.serial,
+      ticketStart: noSlotEntry.ticketStart,
+      slotNum,
+      bookId:      noSlotEntry.bookId,
+      gameName:    noSlotEntry.gameName,
+      price:       noSlotEntry.price,
+    };
+    setScanned((prev) => {
+      const next = [...prev, entry];
+      if (next.length >= 2) {
+        const tickets = next.map(e => e.ticketStart);
+        let seq = true;
+        for (let i = 1; i < tickets.length; i++) {
+          if (tickets[i] <= tickets[i - 1]) { seq = false; break; }
+        }
+        setDetectedScanMode(seq ? "sequential" : "random");
+      }
+      return next;
+    });
+    setNoSlotEntry(null);
+    setScanError("");
+    addAlert("warning", `PRIORITY ERROR sent to manager: Book ${noSlotEntry.bookNum ?? "?"} self-assigned to Slot #${slotNum}.`);
+  }
+
+  function handleNoSlotSkip() {
+    if (!noSlotEntry) return;
+    setScanned((prev) => [...prev, {
+      serial:      noSlotEntry.serial,
+      ticketStart: noSlotEntry.ticketStart,
+      slotNum:     0,
+      bookId:      noSlotEntry.bookId,
+      gameName:    noSlotEntry.gameName,
+      price:       noSlotEntry.price,
+    }]);
+    setNoSlotEntry(null);
+    setScanError("⚠ Book added without slot — will be auto-assigned at clock-in.");
+  }
+
   // ── Dashboard metrics ─────────────────────────────────────────────────────
 
   const completed = shifts;
@@ -812,6 +1105,18 @@ export default function EmployeeDashboard() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Slot-assign modal — PRIORITY ERROR path */}
+      {noSlotEntry && (
+        <SlotAssignModal
+          entry={noSlotEntry}
+          slots={slots}
+          slotNames={slotNames}
+          onAssign={handleNoSlotAssign}
+          onSkip={handleNoSlotSkip}
+          onClose={() => setNoSlotEntry(null)}
+        />
       )}
 
       {/* Active shift timer pill */}
@@ -1112,10 +1417,31 @@ export default function EmployeeDashboard() {
                   </div>
                 )}
 
-                {/* Live slot table — shows manager's allocations with match status */}
-                {slots.filter((s) => s.bookId).length > 0 && (
-                  <LiveSlotTable slots={slots} scanned={scanned} />
+                {/* Scan mode indicator */}
+                {scanned.length >= 2 && detectedScanMode && (
+                  <div className={cn(
+                    "inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border",
+                    detectedScanMode === "sequential"
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      : "bg-blue-50 text-blue-700 border-blue-200"
+                  )}>
+                    <span className={cn("size-1.5 rounded-full",
+                      detectedScanMode === "sequential" ? "bg-emerald-500" : "bg-blue-500"
+                    )} />
+                    {detectedScanMode === "sequential" ? "Sequential mode detected" : "Random mode detected"}
+                  </div>
                 )}
+
+                {/* Slot grid — shows manager's allocations with scan match status */}
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold text-muted-foreground">Manager&apos;s Slot Allocation</p>
+                  <EmployeeSlotGrid
+                    slots={slots}
+                    slotNames={slotNames}
+                    tierCounts={tierCounts}
+                    scanned={scanned}
+                  />
+                </div>
 
                 {/* Verified scanned list */}
                 {scanned.length > 0 && (
@@ -1236,29 +1562,19 @@ export default function EmployeeDashboard() {
                   </div>
                 </div>
 
-                {/* Mid-shift slot updates */}
-                {slots.some((s) => s.bookId) && (
-                  <div className="border rounded-2xl p-4 space-y-3">
-                    <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-                      <BookOpen className="size-3.5" />Active Slots — Mark Book Sold Out
-                    </p>
-                    <div className="divide-y rounded-xl border overflow-hidden">
-                      {slots.filter((s) => s.bookId).map((sl) => (
-                        <div key={sl.slotNum} className="flex items-center justify-between px-3 py-2.5 text-sm">
-                          <div>
-                            <span className="font-bold">Slot #{sl.slotNum}</span>
-                            <span className="text-muted-foreground ml-2 text-xs">{sl.pack ?? sl.bookId?.slice(0, 8)}</span>
-                          </div>
-                          <button
-                            onClick={() => handleBookSoldOut(sl.slotNum, sl.bookId!)}
-                            className="text-xs px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors font-medium">
-                            Sold Out
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                {/* Mid-shift slot grid with sold-out controls */}
+                <div className="border rounded-2xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                    <BookOpen className="size-3.5" />Current Slot Overview
+                  </p>
+                  <EmployeeSlotGrid
+                    slots={slots}
+                    slotNames={slotNames}
+                    tierCounts={tierCounts}
+                    scanned={[]}
+                    onSoldOut={handleBookSoldOut}
+                  />
+                </div>
 
                 {/* Clock out button */}
                 <button

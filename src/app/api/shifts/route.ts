@@ -113,9 +113,10 @@ const updateSlotSchema = z.object({
 });
 
 const notifySlotChangeSchema = z.object({
-  action:  z.literal("notify_slot_change"),
-  slotNum: z.number().int().min(1),
-  message: z.string().optional(),
+  action:   z.literal("notify_slot_change"),
+  slotNum:  z.number().int().min(1),
+  message:  z.string().optional(),
+  priority: z.boolean().optional(),
 });
 
 const bodySchema = z.discriminatedUnion("action", [
@@ -288,14 +289,14 @@ export async function POST(req: Request) {
     // ── Notify Slot Change ────────────────────────────────────────────────────
     if (body.action === "notify_slot_change") {
       await createNotification(payload.orgId, {
-        type:     "slot_change_requested",
-        severity: "warning",
+        type:     body.priority ? "slot_not_assigned_priority" : "slot_change_requested",
+        severity: body.priority ? "emergency" : "warning",
         message:  body.message ?? `${payload.name} flagged Slot #${body.slotNum} — book may need to be updated.`,
         empName:  payload.name,
         empSub:   payload.sub,
-        detail:   { slotNum: body.slotNum },
+        detail:   { slotNum: body.slotNum, priority: body.priority ?? false },
       });
-      return Response.json({ message: "Manager notified." });
+      return Response.json({ message: body.priority ? "Priority error sent to manager." : "Manager notified." });
     }
 
     // ── Clock Out ─────────────────────────────────────────────────────────────
