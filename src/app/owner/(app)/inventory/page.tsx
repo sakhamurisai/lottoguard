@@ -67,20 +67,53 @@ function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+function parseDetailValues(detail: string): { delivery: string; order: string } | null {
+  const vs   = detail.match(/^Delivery:\s*(.+?)\s+vs\s+Order:\s*(.+)$/);
+  if (vs)   return { delivery: vs[1], order: vs[2] };
+  const pipe = detail.match(/^Delivery:\s*(.+?)\s*\|\s*Order:\s*(.+)$/);
+  if (pipe) return { delivery: pipe[1], order: pipe[2] };
+  return null;
+}
+
+// "048159" and "48159" both normalize to "48159" so they compare as equal.
+function normRetailer(s: string): string {
+  return (s ?? "").replace(/[^0-9]/g, "").replace(/^0+/, "");
+}
+
+function normalizeAddress(s: string): string {
+  return (s ?? "")
+    .toLowerCase()
+    .replace(/\b[a-z]{2}\s+\d{5}(-\d{4})?\b/g, "") // strip state + zip ("oh 45169")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function addressesMatch(receipt: string, org: string): boolean {
+  const nr = normalizeAddress(receipt);
+  const no = normalizeAddress(org);
+  if (!nr || !no) return false;
+  return nr.includes(no) || no.includes(nr);
+}
+
 // ── ValidationBadge ───────────────────────────────────────────────────────────
 
-function ValidationBadge({ check }: { check: ValidationCheck }) {
+function ValidationBadge({ check, onClick }: { check: ValidationCheck; onClick?: () => void }) {
   return (
-    <div className={cn(
-      "flex items-start gap-3 rounded-xl px-4 py-3 text-sm border",
-      check.status === "pass" && "bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800/40",
-      check.status === "fail" && "bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-800/40",
-      check.status === "warn" && "bg-amber-50 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800/40",
-    )}>
+    <div
+      onClick={onClick}
+      className={cn(
+        "flex items-start gap-3 rounded-xl px-4 py-3 text-sm border",
+        onClick && "cursor-pointer hover:opacity-80 transition-opacity",
+        check.status === "pass" && "bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800/40",
+        check.status === "fail" && "bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-800/40",
+        check.status === "warn" && "bg-amber-50 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800/40",
+      )}
+    >
       {check.status === "pass" && <CheckCircle weight="fill" className="size-4 text-emerald-600 mt-0.5 shrink-0" />}
       {check.status === "fail" && <XCircle    weight="fill" className="size-4 text-red-600 mt-0.5 shrink-0" />}
       {check.status === "warn" && <Warning    weight="fill" className="size-4 text-amber-600 mt-0.5 shrink-0" />}
-      <div>
+      <div className="flex-1 min-w-0">
         <p className={cn("font-medium text-sm",
           check.status === "pass" && "text-emerald-800 dark:text-emerald-300",
           check.status === "fail" && "text-red-800 dark:text-red-300",
@@ -88,6 +121,14 @@ function ValidationBadge({ check }: { check: ValidationCheck }) {
         )}>{check.label}</p>
         {check.detail && <p className="text-xs mt-0.5 opacity-70">{check.detail}</p>}
       </div>
+      {onClick && (
+        <CaretRight className={cn(
+          "size-4 shrink-0 mt-0.5",
+          check.status === "fail" && "text-red-400 dark:text-red-500",
+          check.status === "warn" && "text-amber-400 dark:text-amber-500",
+          check.status === "pass" && "text-emerald-400 dark:text-emerald-500",
+        )} />
+      )}
     </div>
   );
 }
@@ -786,7 +827,10 @@ export default function InventoryPage() {
   const [orderData,    setOrderData]    = useState<Record<string, unknown> | null>(null);
   const [deliveryChecks, setDeliveryChecks] = useState<ValidationCheck[]>([]);
   const [orderChecks,    setOrderChecks]    = useState<ValidationCheck[]>([]);
-  const [crossChecks,    setCrossChecks]    = useState<ValidationCheck[]>([]);
+  const [crossChecks,      setCrossChecks]      = useState<ValidationCheck[]>([]);
+  const [crossDetailCheck, setCrossDetailCheck] = useState<ValidationCheck | null>(null);
+  const [deliveryEditing,  setDeliveryEditing]  = useState(false);
+  const [orderEditing,     setOrderEditing]     = useState(false);
 
   // Review state
   const [reviewBooks, setReviewBooks] = useState<ReviewBook[]>([]);
@@ -869,6 +913,9 @@ export default function InventoryPage() {
     setDeliveryChecks([]);
     setOrderChecks([]);
     setCrossChecks([]);
+    setCrossDetailCheck(null);
+    setDeliveryEditing(false);
+    setOrderEditing(false);
     setReviewBooks([]);
     setSelected(new Set());
     setEdits({});
@@ -911,10 +958,35 @@ export default function InventoryPage() {
 
   // ── Scan helpers ──────────────────────────────────────────────────────────
 
-  async function uploadAndScan(files: File[], endpoint: string): Promise<Record<string, unknown> | null> {
+  async function uploadAndScan(files: File[], endpoint: string, mergeAll = false): Promise<Record<string, unknown> | null> {
     setScanError(null);
     setScanning(true);
     try {
+      if (mergeAll) {
+        // Scan every page and merge — used for delivery receipts that may span multiple pages
+        const results: Record<string, unknown>[] = [];
+        for (const file of files) {
+          const pr = await fetch("/api/upload/presign", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename: file.name, contentType: file.type }),
+          });
+          if (!pr.ok) continue;
+          const { url, key } = await pr.json();
+          await fetch(url, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+          const sr = await fetch(endpoint, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key }),
+          });
+          if (sr.ok) {
+            const { data } = await sr.json();
+            results.push(data as Record<string, unknown>);
+          }
+        }
+        if (results.length === 0) { setScanError("Could not extract data from any photo. Try clearer images."); return null; }
+        return mergeDeliveryPages(results);
+      }
+
+      // Default: return first successful scan
       for (const file of files) {
         const pr = await fetch("/api/upload/presign", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -940,56 +1012,145 @@ export default function InventoryPage() {
     } finally { setScanning(false); }
   }
 
+  type DeliveryGame = { gameId: string; gameDescription: string; ticketValue: number; packQuantity?: number; packValue?: number; packTotal?: number; packNumbers?: string[] };
+
+  function mergeDeliveryPages(pages: Record<string, unknown>[]): Record<string, unknown> {
+    // The main page is the first non-continuation page (has header + retailer info)
+    const mainPage = pages.find(p => !p.isContinuation) ?? pages[0];
+    const allGames: DeliveryGame[] = [];
+    let totalPacks = 0;
+
+    for (const page of pages) {
+      const games = (page.games as DeliveryGame[]) ?? [];
+      allGames.push(...games);
+      // Only count totalPacksIssued from the main page footer if available; else sum games
+      if (!page.isContinuation && page.totalPacksIssued) {
+        totalPacks = page.totalPacksIssued as number;
+      } else {
+        totalPacks += games.reduce((s, g) => s + (g.packQuantity ?? g.packNumbers?.length ?? 0), 0);
+      }
+    }
+
+    // If main page already had a total, use it; otherwise use summed value
+    const finalTotal = (mainPage.totalPacksIssued as number) || totalPacks;
+
+    return {
+      ...mainPage,
+      games: allGames,
+      totalPacksIssued: finalTotal,
+      pageCount: pages.length,
+      continuationCount: pages.filter(p => p.isContinuation).length,
+    };
+  }
+
   function validateDelivery(data: Record<string, unknown>): ValidationCheck[] {
-    const norm = (s: string) => (s ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
     const checks: ValidationCheck[] = [];
+
+    const pageCount = (data.pageCount as number) ?? 1;
+    const contCount = (data.continuationCount as number) ?? 0;
+    if (pageCount > 1) {
+      checks.push({
+        label: `Multi-page receipt merged (${pageCount} page${pageCount !== 1 ? "s" : ""})`,
+        status: "pass",
+        detail: `${pageCount - contCount} main page${pageCount - contCount !== 1 ? "s" : ""} + ${contCount} continuation page${contCount !== 1 ? "s" : ""} · ${((data.games as unknown[]) ?? []).length} games total`,
+      });
+    }
+
     checks.push({
       label: 'Header contains "Instant Ticket Delivery Receipt"',
       status: (data.headerText as string ?? "").toLowerCase().includes("instant ticket delivery") ? "pass" : "fail",
-      detail: `Found: "${data.headerText}"`,
+      detail: (data.headerText as string) ? `Found: "${data.headerText}"` : pageCount > 1 ? "Not found on page 1 — re-scan with the first page first" : "Not found",
     });
-    const rn = norm(data.retailerNum as string); const orgRn = norm(orgRetailerNum);
+
+    // Check 3: Retailer number — leading zeros ignored ("048159" == "48159") → high-priority fail if wrong
+    const rn = normRetailer(data.retailerNum as string);
+    const orgRn = normRetailer(orgRetailerNum);
     checks.push({
       label: `Retailer number matches (${orgRetailerNum})`,
       status: !rn ? "fail" : rn === orgRn ? "pass" : "fail",
-      detail: !rn ? "Not found" : rn === orgRn ? `Matched: ${data.retailerNum}` : `Receipt has: ${data.retailerNum}`,
+      detail: !rn
+        ? (pageCount > 1 ? "Not found — make sure page 1 is included" : "Not found")
+        : rn === orgRn
+        ? `Matched: ${data.retailerNum}`
+        : `Receipt has: ${data.retailerNum} — expected ${orgRetailerNum}`,
     });
+
+    // Check 2: Address — street + city must match; state and zip are optional (medium severity)
+    const receiptAddr = (data.retailerAddress as string) ?? "";
+    const addrOk = receiptAddr ? addressesMatch(receiptAddr, orgAddress) : false;
     checks.push({
       label: "Address verified",
-      status: "warn",
-      detail: (data.retailerAddress as string)
-        ? `Receipt: ${data.retailerAddress} | Registered: ${orgAddress}`
-        : "Address not found — verify manually",
+      status: !receiptAddr ? "warn" : addrOk ? "pass" : "warn",
+      detail: !receiptAddr
+        ? "Address not found on receipt — verify manually"
+        : addrOk
+        ? `Matched: ${receiptAddr}`
+        : `Receipt: ${receiptAddr} | Registered: ${orgAddress} — street does not match`,
     });
+
+    // Check 1: Every game's pack quantity must equal its extracted pack list length
+    type GameRow = { gameId?: string; gameDescription?: string; packQuantity?: number; packNumbers?: string[] };
+    const games = (data.games as GameRow[]) ?? [];
+    const packMismatches: string[] = [];
+    for (const g of games) {
+      const qty       = g.packQuantity ?? 0;
+      const extracted = g.packNumbers?.length ?? 0;
+      if (qty > 0 && extracted !== qty) {
+        const lbl = g.gameId ? `Game ${g.gameId}` : `"${g.gameDescription}"`;
+        packMismatches.push(`${lbl}: qty=${qty}, extracted=${extracted}`);
+      }
+    }
+    const totalBooks = games.reduce((s, g) => s + (g.packNumbers?.length ?? 0), 0);
+    checks.push({
+      label: "Pack quantities match pack lists",
+      status: packMismatches.length === 0 ? "pass" : "fail",
+      detail: packMismatches.length === 0
+        ? `All ${games.length} game${games.length !== 1 ? "s" : ""} verified — ${totalBooks} book${totalBooks !== 1 ? "s" : ""} total`
+        : packMismatches.join(" · "),
+    });
+
+    // Surface any server-detected extraction discrepancies
+    const discrepancies = (data._discrepancies as string[]) ?? [];
+    for (const d of discrepancies) {
+      checks.push({ label: "Extraction accuracy warning", status: "fail", detail: d });
+    }
+
     return checks;
   }
 
   function validateOrder(data: Record<string, unknown>): ValidationCheck[] {
-    const norm = (s: string) => (s ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
     const checks: ValidationCheck[] = [];
     checks.push({
       label: 'Header contains "Confirm Order"',
       status: (data.headerText as string ?? "").toLowerCase().includes("confirm") ? "pass" : "fail",
       detail: `Found: "${data.headerText}"`,
     });
-    const rn = norm(data.retailerNum as string); const orgRn = norm(orgRetailerNum);
+    const rn = normRetailer(data.retailerNum as string);
+    const orgRn = normRetailer(orgRetailerNum);
     checks.push({
       label: `Retailer number matches (${orgRetailerNum})`,
       status: !rn ? "fail" : rn === orgRn ? "pass" : "fail",
-      detail: !rn ? "Not found" : rn === orgRn ? `Matched: ${data.retailerNum}` : `Receipt has: ${data.retailerNum}`,
+      detail: !rn ? "Not found" : rn === orgRn ? `Matched: ${data.retailerNum}` : `Receipt has: ${data.retailerNum} — expected ${orgRetailerNum}`,
     });
     checks.push({
       label: "Order number present",
       status: data.orderNumber ? "pass" : "fail",
       detail: data.orderNumber ? `Order #: ${data.orderNumber}` : "Not found",
     });
+
+    const discrepancies = (data._discrepancies as string[]) ?? [];
+    for (const d of discrepancies) {
+      checks.push({ label: "Extraction accuracy warning", status: "fail", detail: d });
+    }
+
     return checks;
   }
 
   function crossValidate(dd: Record<string, unknown>, od: Record<string, unknown>): ValidationCheck[] {
-    const norm = (s: string) => (s ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const normStr = (s: string) => (s ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
     const checks: ValidationCheck[] = [];
-    const dr = norm(dd.retailerNum as string); const or2 = norm(od.retailerNum as string);
+    const dr = normRetailer(dd.retailerNum as string);
+    const or2 = normRetailer(od.retailerNum as string);
     checks.push({
       label: "Retailer numbers match between both receipts",
       status: dr && or2 && dr === or2 ? "pass" : "fail",
@@ -1002,11 +1163,16 @@ export default function InventoryPage() {
       status: dd_ && od_ && dd_ === od_ ? "pass" : "warn",
       detail: dd_ === od_ ? `Both: ${dd_}` : `Delivery: ${dd_ || "unknown"} | Order: ${od_ || "unknown"}`,
     });
-    const dOrd = norm(dd.orderNumber as string); const oOrd = norm(od.orderNumber as string);
+    // Delivery Shipment # must match Confirm Order's Order #
+    const dShip = normStr(dd.shipmentId as string); const oOrd = normStr(od.orderNumber as string);
     checks.push({
-      label: "Order numbers match",
-      status: !dOrd || !oOrd ? "warn" : dOrd === oOrd ? "pass" : "fail",
-      detail: dOrd === oOrd ? `Order #: ${dd.orderNumber}` : !dOrd || !oOrd ? "One or both missing" : `Delivery: ${dd.orderNumber} vs Order: ${od.orderNumber}`,
+      label: "Shipment # matches Order #",
+      status: !dShip || !oOrd ? "warn" : dShip === oOrd ? "pass" : "fail",
+      detail: dShip === oOrd
+        ? `Matched: ${dd.shipmentId}`
+        : !dShip || !oOrd
+        ? "One or both missing"
+        : `Delivery: ${dd.shipmentId} vs Order: ${od.orderNumber}`,
     });
     const dc = (dd.games as { packNumbers?: string[] }[] ?? []).reduce((s, g) => s + (g.packNumbers?.length ?? 0), 0);
     const oc = (od.books as unknown[] ?? []).length;
@@ -1016,6 +1182,48 @@ export default function InventoryPage() {
       detail: dc === oc ? `Both: ${dc} books` : `Delivery: ${dc} | Order: ${oc}`,
     });
     return checks;
+  }
+
+  function updateDeliveryGame(idx: number, field: string, value: unknown) {
+    setDeliveryData(prev => {
+      if (!prev) return prev;
+      const games = [...((prev.games as Record<string, unknown>[]) ?? [])];
+      games[idx] = { ...games[idx], [field]: value };
+      return { ...prev, games };
+    });
+  }
+
+  function updateDeliveryField(field: string, value: string) {
+    setDeliveryData(prev => prev ? { ...prev, [field]: value } : prev);
+  }
+
+  function applyDeliveryEdits() {
+    if (deliveryData) {
+      setDeliveryChecks(validateDelivery(deliveryData));
+      if (orderData) setCrossChecks(crossValidate(deliveryData, orderData));
+    }
+    setDeliveryEditing(false);
+  }
+
+  function updateOrderBook(idx: number, field: string, value: unknown) {
+    setOrderData(prev => {
+      if (!prev) return prev;
+      const books = [...((prev.books as Record<string, unknown>[]) ?? [])];
+      books[idx] = { ...books[idx], [field]: value };
+      return { ...prev, books };
+    });
+  }
+
+  function updateOrderField(field: string, value: string) {
+    setOrderData(prev => prev ? { ...prev, [field]: value } : prev);
+  }
+
+  function applyOrderEdits() {
+    if (orderData) {
+      setOrderChecks(validateOrder(orderData));
+      if (deliveryData) setCrossChecks(crossValidate(deliveryData, orderData));
+    }
+    setOrderEditing(false);
   }
 
   function buildReviewBooks(dd: Record<string, unknown>): ReviewBook[] {
@@ -1033,7 +1241,7 @@ export default function InventoryPage() {
   }
 
   async function handleDeliveryScan(files: File[]) {
-    const data = await uploadAndScan(files, "/api/receipt/scan-delivery");
+    const data = await uploadAndScan(files, "/api/receipt/scan-delivery", true);
     if (!data) return;
     setDeliveryData(data);
     setDeliveryChecks(validateDelivery(data));
@@ -1279,6 +1487,86 @@ export default function InventoryPage() {
         </div>
       )}
 
+      {/* ── Cross-validation detail popup ── */}
+      {crossDetailCheck && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setCrossDetailCheck(null)}
+        >
+          <div
+            className="bg-background border rounded-2xl shadow-2xl w-full max-w-sm p-5 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Title row */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                {crossDetailCheck.status === "fail" && <XCircle    weight="fill" className="size-5 text-red-500 shrink-0" />}
+                {crossDetailCheck.status === "warn" && <Warning    weight="fill" className="size-5 text-amber-500 shrink-0" />}
+                {crossDetailCheck.status === "pass" && <CheckCircle weight="fill" className="size-5 text-emerald-500 shrink-0" />}
+                <p className="font-semibold text-sm leading-snug">{crossDetailCheck.label}</p>
+              </div>
+              <button
+                onClick={() => setCrossDetailCheck(null)}
+                className="p-1 rounded-lg hover:bg-muted transition-colors text-muted-foreground shrink-0"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+
+            {/* Value cards */}
+            {(() => {
+              const parsed = parseDetailValues(crossDetailCheck.detail ?? "");
+              if (parsed) {
+                const isMismatch = parsed.delivery !== parsed.order;
+                return (
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      { side: "Delivery Receipt", Icon: Truck,    value: parsed.delivery },
+                      { side: "Confirm Order",    Icon: FileText, value: parsed.order    },
+                    ].map(({ side, Icon, value }) => (
+                      <div key={side} className="space-y-1.5">
+                        <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                          <Icon className="size-3" /> {side}
+                        </p>
+                        <div className={cn(
+                          "rounded-xl px-3 py-2.5 text-sm font-mono font-medium border break-all",
+                          isMismatch && crossDetailCheck.status === "fail"
+                            ? "bg-red-50 border-red-200 text-red-700 dark:bg-red-950/30 dark:border-red-800/40 dark:text-red-400"
+                            : isMismatch && crossDetailCheck.status === "warn"
+                            ? "bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/30 dark:border-amber-800/40 dark:text-amber-400"
+                            : "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/30 dark:border-emerald-800/40 dark:text-emerald-400",
+                        )}>
+                          {value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              }
+              return (
+                <div className={cn(
+                  "rounded-xl px-4 py-3 text-sm border",
+                  crossDetailCheck.status === "fail" && "bg-red-50 border-red-200 text-red-700 dark:bg-red-950/30 dark:border-red-800/40 dark:text-red-400",
+                  crossDetailCheck.status === "warn" && "bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/30 dark:border-amber-800/40 dark:text-amber-400",
+                  crossDetailCheck.status === "pass" && "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/30 dark:border-emerald-800/40 dark:text-emerald-400",
+                )}>
+                  {crossDetailCheck.detail ?? "No detail available."}
+                </div>
+              );
+            })()}
+
+            {/* Footer hint */}
+            <p className="text-xs text-muted-foreground">
+              {crossDetailCheck.status === "fail"
+                ? "This value must match between both receipts before importing."
+                : crossDetailCheck.status === "warn"
+                ? "Review this value carefully before proceeding."
+                : "Values are consistent across both receipts."}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ── Multi-step receipt modal ── */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-2 sm:p-4">
@@ -1342,7 +1630,7 @@ export default function InventoryPage() {
                 <div className="p-5 space-y-4">
                   <div className="bg-blue-50 border border-blue-200 dark:bg-blue-950/30 dark:border-blue-800/40 rounded-2xl p-4 text-sm text-blue-800 dark:text-blue-300">
                     <p className="font-semibold">Step 1: Instant Ticket Delivery Receipt</p>
-                    <p className="text-xs mt-1 text-blue-700 dark:text-blue-400">The physical receipt from the Ohio Lottery shipment. Contains the list of all books in this delivery.</p>
+                    <p className="text-xs mt-1 text-blue-700 dark:text-blue-400">The physical receipt from the Ohio Lottery shipment. If the receipt spans multiple pages, upload all pages together — the system will automatically detect and merge continuation pages.</p>
                   </div>
                   <UploadZone scanning={scanning} onFiles={handleDeliveryScan} error={scanError} onRetry={() => setScanError(null)} />
                 </div>
@@ -1352,6 +1640,7 @@ export default function InventoryPage() {
               {step === "delivery-result" && deliveryData && (() => {
                 type DeliveryGame = { gameId: string; gameDescription: string; ticketValue: number; packQuantity?: number; packValue?: number; packTotal?: number; packNumbers?: string[] };
                 const dGames = (deliveryData.games as DeliveryGame[]) ?? [];
+                const inputCls = "w-full bg-background border rounded-lg px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary";
                 return (
                   <div className="p-5 space-y-4">
                     <p className="text-sm font-semibold">Delivery Receipt — Validation</p>
@@ -1364,33 +1653,137 @@ export default function InventoryPage() {
                       <div className="border rounded-2xl overflow-hidden">
                         <div className="px-4 py-2.5 bg-blue-50 dark:bg-blue-950/30 border-b flex items-center justify-between">
                           <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Extracted Game Table</p>
-                          <span className="text-xs text-muted-foreground">{dGames.length} game{dGames.length !== 1 ? "s" : ""} · {dGames.reduce((s, g) => s + (g.packNumbers?.length ?? 0), 0)} books</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">{dGames.length} game{dGames.length !== 1 ? "s" : ""} · {dGames.reduce((s, g) => s + (g.packNumbers?.length ?? 0), 0)} books</span>
+                            {deliveryEditing ? (
+                              <button onClick={applyDeliveryEdits}
+                                className="text-xs px-2.5 py-1 bg-primary text-primary-foreground rounded-lg font-semibold hover:opacity-90 transition-opacity">
+                                Save
+                              </button>
+                            ) : (
+                              <button onClick={() => setDeliveryEditing(true)}
+                                className="text-xs px-2.5 py-1 border rounded-lg hover:bg-accent transition-colors font-medium">
+                                Edit
+                              </button>
+                            )}
+                          </div>
                         </div>
+
+                        {/* Header field editor */}
+                        {deliveryEditing && (
+                          <div className="px-4 py-3 bg-amber-50 dark:bg-amber-950/20 border-b grid grid-cols-2 gap-2">
+                            {[
+                              { label: "Retailer #", field: "retailerNum" },
+                              { label: "Shipment #", field: "shipmentId" },
+                              { label: "Order #",    field: "orderNumber" },
+                              { label: "Date",       field: "date" },
+                            ].map(({ label, field }) => (
+                              <label key={field} className="flex flex-col gap-0.5">
+                                <span className="text-[10px] text-muted-foreground font-medium">{label}</span>
+                                <input
+                                  className={inputCls}
+                                  value={(deliveryData[field] as string) ?? ""}
+                                  onChange={e => updateDeliveryField(field, e.target.value)}
+                                />
+                              </label>
+                            ))}
+                            <label className="col-span-2 flex flex-col gap-0.5">
+                              <span className="text-[10px] text-muted-foreground font-medium">Address</span>
+                              <input
+                                className={inputCls}
+                                value={(deliveryData.retailerAddress as string) ?? ""}
+                                onChange={e => updateDeliveryField("retailerAddress", e.target.value)}
+                              />
+                            </label>
+                          </div>
+                        )}
+
                         <div className="overflow-x-auto">
                           <table className="w-full text-xs">
                             <thead className="bg-muted/20 border-b">
                               <tr>
-                                {["Game ID", "Name", "Ticket $", "Packs", "Pack Value", "Pack Numbers"].map((h) => (
+                                {["Game ID", "Name", "Ticket $", "Qty", "Pack Value", "Pack Total", "Pack Numbers (space-separated)"].map((h) => (
                                   <th key={h} className="px-3 py-2 text-left font-semibold text-muted-foreground whitespace-nowrap">{h}</th>
                                 ))}
                               </tr>
                             </thead>
                             <tbody className="divide-y">
-                              {dGames.map((g, i) => (
-                                <tr key={i} className="hover:bg-muted/10 transition-colors">
-                                  <td className="px-3 py-2 font-mono font-medium whitespace-nowrap">{g.gameId}</td>
-                                  <td className="px-3 py-2 max-w-[160px] truncate" title={g.gameDescription}>{g.gameDescription}</td>
-                                  <td className="px-3 py-2 font-medium">${g.ticketValue}</td>
-                                  <td className="px-3 py-2">{g.packQuantity ?? (g.packNumbers?.length ?? "—")}</td>
-                                  <td className="px-3 py-2">{g.packValue != null ? `$${g.packValue.toLocaleString()}` : "—"}</td>
+                              {dGames.map((g, i) => {
+                                const packQtyMismatch   = (g.packQuantity ?? 0) > 0 && (g.packNumbers?.length ?? 0) !== (g.packQuantity ?? 0);
+                                const calcTotal         = (g.packValue ?? 0) * (g.packQuantity ?? 0);
+                                const packTotalMismatch = g.packValue != null && g.packQuantity != null && g.packTotal != null
+                                  && Math.abs(calcTotal - g.packTotal) > 0.50;
+                                const rowErr = packQtyMismatch || packTotalMismatch;
+                                return (
+                                <tr key={i} className={cn("transition-colors",
+                                  rowErr ? "bg-red-50 dark:bg-red-950/20"
+                                  : deliveryEditing ? "bg-amber-50/40 dark:bg-amber-950/10"
+                                  : "hover:bg-muted/10")}>
                                   <td className="px-3 py-2">
-                                    <span className="font-mono text-muted-foreground">
-                                      {(g.packNumbers ?? []).slice(0, 3).join(", ")}
-                                      {(g.packNumbers?.length ?? 0) > 3 && ` +${(g.packNumbers!.length - 3)} more`}
-                                    </span>
+                                    {deliveryEditing
+                                      ? <input className={inputCls} value={g.gameId ?? ""} onChange={e => updateDeliveryGame(i, "gameId", e.target.value)} />
+                                      : <span className="font-mono font-medium whitespace-nowrap">{g.gameId}</span>}
+                                  </td>
+                                  <td className="px-3 py-2 max-w-[160px]">
+                                    {deliveryEditing
+                                      ? <input className={inputCls} value={g.gameDescription ?? ""} onChange={e => updateDeliveryGame(i, "gameDescription", e.target.value)} />
+                                      : <span className="truncate block" title={g.gameDescription}>{g.gameDescription}</span>}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {deliveryEditing
+                                      ? <input className={inputCls} type="number" min={0} value={g.ticketValue ?? ""} onChange={e => updateDeliveryGame(i, "ticketValue", Number(e.target.value))} />
+                                      : <span className="font-medium">${g.ticketValue}</span>}
+                                  </td>
+                                  {/* Qty */}
+                                  <td className="px-3 py-2">
+                                    {deliveryEditing
+                                      ? <input className={cn(inputCls, "w-16", packQtyMismatch && "border-red-400 focus:ring-red-400")} type="number" min={0}
+                                          value={g.packQuantity ?? ""}
+                                          onChange={e => updateDeliveryGame(i, "packQuantity", Number(e.target.value))} />
+                                      : <span className={cn("flex items-center gap-1", packQtyMismatch && "text-red-600 font-semibold")}>
+                                          {packQtyMismatch && <span title={`Pack list has ${g.packNumbers?.length ?? 0} entries but Qty says ${g.packQuantity}`}><Warning weight="fill" className="size-3.5 shrink-0" /></span>}
+                                          {g.packQuantity ?? (g.packNumbers?.length ?? "—")}
+                                          {packQtyMismatch && <span className="text-muted-foreground font-normal text-[10px]">(list:{g.packNumbers?.length ?? 0})</span>}
+                                        </span>}
+                                  </td>
+                                  {/* Pack Value */}
+                                  <td className="px-3 py-2">
+                                    {deliveryEditing
+                                      ? <input className={cn(inputCls, "w-20", packTotalMismatch && "border-red-400 focus:ring-red-400")} type="number" min={0}
+                                          value={g.packValue ?? ""}
+                                          onChange={e => updateDeliveryGame(i, "packValue", Number(e.target.value))} />
+                                      : <span className={cn("flex items-center gap-1", packTotalMismatch && "text-red-600 font-semibold")}>
+                                          {packTotalMismatch && <span title={`$${g.packValue}×${g.packQuantity}=$${calcTotal.toFixed(0)} but receipt Total=$${g.packTotal}`}><Warning weight="fill" className="size-3.5 shrink-0" /></span>}
+                                          {g.packValue != null ? `$${g.packValue.toLocaleString()}` : "—"}
+                                        </span>}
+                                  </td>
+                                  {/* Pack Total (from receipt) */}
+                                  <td className="px-3 py-2">
+                                    {deliveryEditing
+                                      ? <input className={cn(inputCls, "w-20")} type="number" min={0}
+                                          value={g.packTotal ?? ""}
+                                          onChange={e => updateDeliveryGame(i, "packTotal", Number(e.target.value))} />
+                                      : <span className={cn(packTotalMismatch && "text-red-600 font-semibold")}>
+                                          {g.packTotal != null ? `$${g.packTotal.toLocaleString()}` : "—"}
+                                          {packTotalMismatch && <span className="block text-[10px] text-red-500 font-normal">calc: ${calcTotal.toFixed(0)}</span>}
+                                        </span>}
+                                  </td>
+                                  {/* Pack Numbers */}
+                                  <td className="px-3 py-2 min-w-[220px]">
+                                    {deliveryEditing
+                                      ? <input
+                                          className={cn(inputCls, packQtyMismatch && "border-red-400 focus:ring-red-400")}
+                                          value={(g.packNumbers ?? []).join(" ")}
+                                          onChange={e => updateDeliveryGame(i, "packNumbers", e.target.value.trim().split(/\s+/).filter(Boolean))}
+                                        />
+                                      : <span className="font-mono text-muted-foreground">
+                                          {(g.packNumbers ?? []).slice(0, 3).join(", ")}
+                                          {(g.packNumbers?.length ?? 0) > 3 && ` +${(g.packNumbers!.length - 3)} more`}
+                                        </span>}
                                   </td>
                                 </tr>
-                              ))}
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -1424,17 +1817,18 @@ export default function InventoryPage() {
 
               {/* Order result + cross-validate */}
               {step === "order-result" && orderData && deliveryData && (() => {
-                type DeliveryGame = { gameId: string; gameDescription: string; ticketValue: number; packQuantity?: number; packValue?: number; packNumbers?: string[] };
-                type OrderBook   = { gameId: string; gameName: string; ticketValue: number; bookValue?: number; status?: string };
+                type DeliveryGame = { gameId: string; gameDescription: string; ticketValue: number; packQuantity?: number; packValue?: number; packTotal?: number; packNumbers?: string[] };
+                type OrderBook   = { gameId: string; gameName: string; bookNumber?: string; ticketValue: number; bookValue?: number; status?: string };
                 const dGames = (deliveryData.games as DeliveryGame[]) ?? [];
                 const oBooks = (orderData.books as OrderBook[]) ?? [];
+                const inputCls = "w-full bg-background border rounded-lg px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary";
                 return (
                   <div className="p-5 space-y-5">
 
                     {/* Side-by-side tables */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-                      {/* Delivery receipt table */}
+                      {/* Delivery receipt table (read-only summary; edit on previous step) */}
                       <div className="border rounded-2xl overflow-hidden">
                         <div className="px-4 py-2.5 bg-blue-50 dark:bg-blue-950/30 border-b flex items-center justify-between">
                           <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Delivery Receipt</p>
@@ -1452,19 +1846,42 @@ export default function InventoryPage() {
                             <tbody className="divide-y">
                               {dGames.length === 0 ? (
                                 <tr><td colSpan={6} className="px-3 py-4 text-center text-muted-foreground">No games extracted</td></tr>
-                              ) : dGames.map((g, i) => (
-                                <tr key={i} className="hover:bg-muted/10">
-                                  <td className="px-3 py-2 font-mono font-medium whitespace-nowrap">{g.gameId}</td>
+                              ) : dGames.map((g, i) => {
+                                const packQtyMismatch   = (g.packQuantity ?? 0) > 0 && (g.packNumbers?.length ?? 0) !== (g.packQuantity ?? 0);
+                                const calcTotal         = (g.packValue ?? 0) * (g.packQuantity ?? 0);
+                                const packTotalMismatch = g.packValue != null && g.packQuantity != null && g.packTotal != null
+                                  && Math.abs(calcTotal - g.packTotal) > 0.50;
+                                const rowErr = packQtyMismatch || packTotalMismatch;
+                                return (
+                                <tr key={i} className={cn("transition-colors", rowErr ? "bg-red-50 dark:bg-red-950/20" : "hover:bg-muted/10")}>
+                                  <td className="px-3 py-2 font-mono font-medium whitespace-nowrap">{(g.gameId ?? "").split("-")[0] || g.gameId}</td>
                                   <td className="px-3 py-2 max-w-[120px] truncate" title={g.gameDescription}>{g.gameDescription}</td>
                                   <td className="px-3 py-2 font-medium">${g.ticketValue}</td>
-                                  <td className="px-3 py-2">{g.packQuantity ?? (g.packNumbers?.length ?? "—")}</td>
-                                  <td className="px-3 py-2">{g.packValue != null ? `$${g.packValue.toLocaleString()}` : "—"}</td>
+                                  {/* Packs / Qty */}
+                                  <td className="px-3 py-2">
+                                    <span className={cn("flex items-center gap-1", packQtyMismatch && "text-red-600 font-semibold")}>
+                                      {packQtyMismatch && <span title={`Pack list has ${g.packNumbers?.length ?? 0} entries but Qty says ${g.packQuantity}`}><Warning weight="fill" className="size-3.5 shrink-0" /></span>}
+                                      {g.packQuantity ?? (g.packNumbers?.length ?? "—")}
+                                      {packQtyMismatch && <span className="text-muted-foreground font-normal text-[10px]">(list:{g.packNumbers?.length ?? 0})</span>}
+                                    </span>
+                                  </td>
+                                  {/* Pack Value */}
+                                  <td className="px-3 py-2">
+                                    <span className={cn("flex flex-col", packTotalMismatch && "text-red-600 font-semibold")}>
+                                      <span className="flex items-center gap-1">
+                                        {packTotalMismatch && <span title={`$${g.packValue}×${g.packQuantity}=$${calcTotal.toFixed(0)} but receipt Total=$${g.packTotal}`}><Warning weight="fill" className="size-3.5 shrink-0" /></span>}
+                                        {g.packValue != null ? `$${g.packValue.toLocaleString()}` : "—"}
+                                      </span>
+                                      {packTotalMismatch && <span className="text-[10px] font-normal text-red-500">Total: ${g.packTotal?.toLocaleString()} (calc: ${calcTotal.toFixed(0)})</span>}
+                                    </span>
+                                  </td>
                                   <td className="px-3 py-2 font-mono text-muted-foreground">
                                     {(g.packNumbers ?? []).slice(0, 2).join(", ")}
                                     {(g.packNumbers?.length ?? 0) > 2 && ` +${g.packNumbers!.length - 2}`}
                                   </td>
                                 </tr>
-                              ))}
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -1474,15 +1891,50 @@ export default function InventoryPage() {
                       <div className="border rounded-2xl overflow-hidden">
                         <div className="px-4 py-2.5 bg-emerald-50 dark:bg-emerald-950/30 border-b flex items-center justify-between">
                           <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Confirm Order</p>
-                          <span className="text-xs text-muted-foreground">
-                            {oBooks.filter(b => b.status === "C").length} confirmed · {oBooks.length} total
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">
+                              {oBooks.filter(b => b.status === "C").length} confirmed · {oBooks.length} total
+                            </span>
+                            {orderEditing ? (
+                              <button onClick={applyOrderEdits}
+                                className="text-xs px-2.5 py-1 bg-primary text-primary-foreground rounded-lg font-semibold hover:opacity-90 transition-opacity">
+                                Save
+                              </button>
+                            ) : (
+                              <button onClick={() => setOrderEditing(true)}
+                                className="text-xs px-2.5 py-1 border rounded-lg hover:bg-accent transition-colors font-medium">
+                                Edit
+                              </button>
+                            )}
+                          </div>
                         </div>
+
+                        {/* Order header field editor */}
+                        {orderEditing && (
+                          <div className="px-4 py-3 bg-amber-50 dark:bg-amber-950/20 border-b grid grid-cols-2 gap-2">
+                            {[
+                              { label: "Retailer #",   field: "retailerNum" },
+                              { label: "Order #",      field: "orderNumber" },
+                              { label: "Date",         field: "date" },
+                              { label: "Terminal",     field: "terminalNum" },
+                            ].map(({ label, field }) => (
+                              <label key={field} className="flex flex-col gap-0.5">
+                                <span className="text-[10px] text-muted-foreground font-medium">{label}</span>
+                                <input
+                                  className={inputCls}
+                                  value={(orderData[field] as string) ?? ""}
+                                  onChange={e => updateOrderField(field, e.target.value)}
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        )}
+
                         <div className="overflow-x-auto">
                           <table className="w-full text-xs">
                             <thead className="bg-muted/20 border-b">
                               <tr>
-                                {["Game ID", "Name", "$", "Book Value", "Status"].map((h) => (
+                                {["Game ID", "Book #", "$", "Book Value", "Status"].map((h) => (
                                   <th key={h} className="px-3 py-2 text-left font-semibold text-muted-foreground whitespace-nowrap">{h}</th>
                                 ))}
                               </tr>
@@ -1490,22 +1942,56 @@ export default function InventoryPage() {
                             <tbody className="divide-y">
                               {oBooks.length === 0 ? (
                                 <tr><td colSpan={5} className="px-3 py-4 text-center text-muted-foreground">No books extracted</td></tr>
-                              ) : oBooks.map((b, i) => (
-                                <tr key={i} className="hover:bg-muted/10">
-                                  <td className="px-3 py-2 font-mono font-medium whitespace-nowrap">{b.gameId}</td>
-                                  <td className="px-3 py-2 max-w-[120px] truncate" title={b.gameName}>{b.gameName}</td>
-                                  <td className="px-3 py-2 font-medium">${b.ticketValue}</td>
-                                  <td className="px-3 py-2">{b.bookValue != null ? `$${b.bookValue.toLocaleString()}` : "—"}</td>
+                              ) : oBooks.map((b, i) => {
+                                const resolvedBookNum = b.bookNumber ?? b.gameId?.split("-")[1];
+                                const rowWarn = !resolvedBookNum;
+                                return (
+                                <tr key={i} className={cn("transition-colors",
+                                  rowWarn ? "bg-amber-50 dark:bg-amber-950/20"
+                                  : orderEditing ? "bg-amber-50/40 dark:bg-amber-950/10"
+                                  : "hover:bg-muted/10")}>
                                   <td className="px-3 py-2">
-                                    <span className={cn(
-                                      "px-1.5 py-0.5 rounded font-semibold",
-                                      b.status === "C"  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" :
-                                      b.status === "NC" ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" :
-                                      "bg-muted text-muted-foreground"
-                                    )}>{b.status ?? "—"}</span>
+                                    {orderEditing
+                                      ? <input className={inputCls} value={(b.gameId ?? "").split("-")[0] || b.gameId} onChange={e => updateOrderBook(i, "gameId", e.target.value)} />
+                                      : <span className="font-mono font-medium whitespace-nowrap">{(b.gameId ?? "").split("-")[0] || b.gameId}</span>}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {orderEditing
+                                      ? <input className={cn(inputCls, rowWarn && "border-amber-400 focus:ring-amber-400")} value={resolvedBookNum ?? ""} onChange={e => updateOrderBook(i, "bookNumber", e.target.value)} />
+                                      : <span className="flex items-center gap-1 font-mono">
+                                          {rowWarn && <span title="Book number could not be extracted"><Warning weight="fill" className="size-3.5 text-amber-500 shrink-0" /></span>}
+                                          <span className={cn("max-w-[100px] truncate block", rowWarn && "text-amber-600 dark:text-amber-400")}
+                                            title={resolvedBookNum ?? b.gameName}>
+                                            {resolvedBookNum ?? "—"}
+                                          </span>
+                                        </span>}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {orderEditing
+                                      ? <input className={inputCls} type="number" min={0} value={b.ticketValue ?? ""} onChange={e => updateOrderBook(i, "ticketValue", Number(e.target.value))} />
+                                      : <span className="font-medium">${b.ticketValue}</span>}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {orderEditing
+                                      ? <input className={inputCls} type="number" min={0} value={b.bookValue ?? ""} onChange={e => updateOrderBook(i, "bookValue", Number(e.target.value))} />
+                                      : <span>{b.bookValue != null ? `$${b.bookValue.toLocaleString()}` : "—"}</span>}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {orderEditing
+                                      ? <select className={inputCls} value={b.status ?? ""} onChange={e => updateOrderBook(i, "status", e.target.value)}>
+                                          <option value="C">C</option>
+                                          <option value="NC">NC</option>
+                                        </select>
+                                      : <span className={cn(
+                                          "px-1.5 py-0.5 rounded font-semibold",
+                                          b.status === "C"  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" :
+                                          b.status === "NC" ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" :
+                                          "bg-muted text-muted-foreground"
+                                        )}>{b.status ?? "—"}</span>}
                                   </td>
                                 </tr>
-                              ))}
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -1515,7 +2001,11 @@ export default function InventoryPage() {
                     {/* Cross-validation */}
                     <div className="border-t pt-4 space-y-3">
                       <p className="text-sm font-semibold">Cross-Validation</p>
-                      <div className="space-y-2">{crossChecks.map((c, i) => <ValidationBadge key={i} check={c} />)}</div>
+                      <div className="space-y-2">
+                        {crossChecks.map((c, i) => (
+                          <ValidationBadge key={i} check={c} onClick={() => setCrossDetailCheck(c)} />
+                        ))}
+                      </div>
                       {failCount > 0 && (
                         <p className="text-xs text-destructive bg-destructive/8 px-3 py-2 rounded-xl">
                           {failCount} error{failCount > 1 ? "s" : ""} found. Verify the receipts before importing.

@@ -49,10 +49,18 @@ function parseSerial(serial: string) {
 
 // ── Schemas ────────────────────────────────────────────────────────────────────
 
-const bookEntrySchema = z.object({
+const serialEntrySchema = z.object({
   serial:  z.string().regex(SERIAL_RE, "Invalid ticket serial format"),
   slotNum: z.number().int().min(1).optional(),
 });
+
+const directEntrySchema = z.object({
+  slotNum:     z.number().int().min(1),
+  bookId:      z.string().min(1),
+  ticketStart: z.number().int().min(0),
+});
+
+const bookEntrySchema = z.union([serialEntrySchema, directEntrySchema]);
 
 const clockInSchema = z.object({
   action:  z.literal("clock_in"),
@@ -104,11 +112,18 @@ const updateSlotSchema = z.object({
   bookId:  z.string().nullable(),
 });
 
+const notifySlotChangeSchema = z.object({
+  action:  z.literal("notify_slot_change"),
+  slotNum: z.number().int().min(1),
+  message: z.string().optional(),
+});
+
 const bodySchema = z.discriminatedUnion("action", [
   clockInSchema,
   clockOutSchema,
   bookSoldOutSchema,
   updateSlotSchema,
+  notifySlotChangeSchema,
 ]);
 
 // ── POST ───────────────────────────────────────────────────────────────────────
@@ -136,10 +151,38 @@ export async function POST(req: Request) {
       let emptySlotIdx = 0;
 
       for (const entry of body.entries) {
+        let book: (typeof books)[number] | undefined;
+        let ticketNum: number;
+        let resolvedBookNum: string;
+
+        if ("bookId" in entry) {
+          // Direct entry: slotNum + bookId + ticketStart (no serial scan)
+          book = books.find((b) => b.bookId === entry.bookId);
+          if (!book) {
+            return Response.json({ error: `Book not found: ${entry.bookId}.` }, { status: 404 });
+          }
+          if (entry.ticketStart !== (book.ticketStart as number)) {
+            return Response.json({
+              error: `Wrong starting ticket. Expected #${book.ticketStart as number}, got #${entry.ticketStart}.`,
+            }, { status: 422 });
+          }
+          ticketNum = entry.ticketStart;
+          resolvedBookNum = String(book.pack ?? book.bookId);
+          resolvedEntries.push({
+            serial:      "",
+            ticketStart: ticketNum,
+            slotNum:     entry.slotNum,
+            bookId:      entry.bookId,
+          });
+          continue;
+        }
+
+        // Serial-based entry
         const parsed = parseSerial(entry.serial)!;
-        const book = books.find(
+        book = books.find(
           (b) => String(b.gameId) === parsed.gameId && String(b.pack) === parsed.bookNum
         );
+        resolvedBookNum = parsed.bookNum;
         if (!book) {
           return Response.json({
             error: `Book not found for serial ${entry.serial}. Make sure you're scanning a ticket from your store.`,
@@ -152,6 +195,7 @@ export async function POST(req: Request) {
             error: `Wrong starting ticket for book ${parsed.bookNum}. Inventory expects ticket #${book.ticketStart as number}. Please scan that ticket.`,
           }, { status: 422 });
         }
+        ticketNum = parsed.ticketNum;
 
         let slotNum = entry.slotNum ?? slotByBookId[book.bookId as string];
 
@@ -167,16 +211,16 @@ export async function POST(req: Request) {
           await createNotification(payload.orgId, {
             type:     "auto_slot_assigned",
             severity: "important",
-            message:  `Book ${parsed.bookNum} had no slot — auto-assigned to Slot #${slotNum} by ${payload.name} at clock-in.`,
+            message:  `Book ${resolvedBookNum} had no slot — auto-assigned to Slot #${slotNum} by ${payload.name} at clock-in.`,
             empName:  payload.name,
             empSub:   payload.sub,
-            detail:   { bookId: book.bookId, bookNum: parsed.bookNum, slotNum },
+            detail:   { bookId: book.bookId, bookNum: resolvedBookNum, slotNum },
           });
         }
 
         resolvedEntries.push({
           serial:      entry.serial,
-          ticketStart: parsed.ticketNum,
+          ticketStart: ticketNum,
           slotNum,
           bookId:      book.bookId as string,
         });
@@ -239,6 +283,19 @@ export async function POST(req: Request) {
         detail:   { slotNum: body.slotNum, bookId: body.bookId },
       });
       return Response.json({ message: "Slot updated." });
+    }
+
+    // ── Notify Slot Change ────────────────────────────────────────────────────
+    if (body.action === "notify_slot_change") {
+      await createNotification(payload.orgId, {
+        type:     "slot_change_requested",
+        severity: "warning",
+        message:  body.message ?? `${payload.name} flagged Slot #${body.slotNum} — book may need to be updated.`,
+        empName:  payload.name,
+        empSub:   payload.sub,
+        detail:   { slotNum: body.slotNum },
+      });
+      return Response.json({ message: "Manager notified." });
     }
 
     // ── Clock Out ─────────────────────────────────────────────────────────────

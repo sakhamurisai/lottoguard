@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils";
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+type BookInfo = { gameName: string; pack: string; price: number; status: string; ticketStart?: number; gameId?: string };
+
 type ShiftStatus = "active" | "completed";
 type Shift = {
   shiftId:    string;
@@ -85,6 +87,7 @@ type CashesData = {
 type ClockStep =
   | "idle"
   | "start"
+  | "scan_grid"
   | "scan_choose"
   | "scanning"
   | "preview"
@@ -202,6 +205,19 @@ const TIER_TEXT: Record<number, string> = {
    1: "text-green-700",  2: "text-teal-700",   5: "text-blue-700",
   10: "text-violet-700",20: "text-purple-700", 30: "text-pink-700", 50: "text-rose-700",
 };
+
+const TIERS = [
+  { price:  1, label:  "$1", color: "text-green-700",  bg: "bg-green-50",  border: "border-green-200",  headerBg: "bg-green-100"  },
+  { price:  2, label:  "$2", color: "text-teal-700",   bg: "bg-teal-50",   border: "border-teal-200",   headerBg: "bg-teal-100"   },
+  { price:  5, label:  "$5", color: "text-blue-700",   bg: "bg-blue-50",   border: "border-blue-200",   headerBg: "bg-blue-100"   },
+  { price: 10, label: "$10", color: "text-violet-700", bg: "bg-violet-50", border: "border-violet-200", headerBg: "bg-violet-100" },
+  { price: 20, label: "$20", color: "text-purple-700", bg: "bg-purple-50", border: "border-purple-200", headerBg: "bg-purple-100" },
+  { price: 30, label: "$30", color: "text-pink-700",   bg: "bg-pink-50",   border: "border-pink-200",   headerBg: "bg-pink-100"   },
+  { price: 50, label: "$50", color: "text-rose-700",   bg: "bg-rose-50",   border: "border-rose-200",   headerBg: "bg-rose-100"   },
+];
+const MAX_PER_TIER = 20;
+function slotNumFromTier(tierIdx: number, colIdx: number) { return tierIdx * MAX_PER_TIER + colIdx + 1; }
+const FOLD = { clipPath: "polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%)" };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Camera scanner component
