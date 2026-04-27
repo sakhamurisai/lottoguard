@@ -3,10 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Clock, CheckCircle, Ticket, TrendingUp,
-  Camera, Keyboard, AlertTriangle, X,
+  Camera, AlertTriangle, X,
   ArrowRight, BarChart2, LayoutGrid, Bell,
-  Upload, Eye, RotateCcw, BookOpen,
-  RefreshCw,
+  Upload, Eye, RotateCcw, BookOpen, RefreshCw,
 } from "lucide-react";
 import { useAuth } from "@/components/auth-provider";
 import { cn } from "@/lib/utils";
@@ -15,23 +14,22 @@ import { cn } from "@/lib/utils";
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-type BookInfo = { gameName: string; pack: string; price: number; status: string; ticketStart?: number; gameId?: string };
-
 type ShiftStatus = "active" | "completed";
+
 type Shift = {
-  shiftId:    string;
-  slotNum:    number;
-  ticketStart: number;
-  ticketEnd?:  number;
-  clockIn:     string;
-  clockOut?:   string;
-  status:      ShiftStatus;
-  sold?:       number;
-  bookPrice?:  number;
-  gameName?:   string;
-  shiftBooks?: ScannedEntry[];
-  finalCalc?:  number;
-  drawerCash?: number;
+  shiftId:             string;
+  slotNum:             number;
+  ticketStart:         number;
+  ticketEnd?:          number;
+  clockIn:             string;
+  clockOut?:           string;
+  status:              ShiftStatus;
+  sold?:               number;
+  bookPrice?:          number;
+  gameName?:           string;
+  shiftBooks?:         ScannedEntry[];
+  finalCalc?:          number;
+  drawerCash?:         number;
   discrepancySeverity?: "none" | "over" | "short";
 };
 
@@ -44,16 +42,6 @@ type SlotInfo = {
   price?:       number;
   ticketStart?: number;
   status?:      string;
-};
-
-type PendingSlotEntry = {
-  serial:      string;
-  bookId:      string;
-  gameId?:     string;
-  gameName?:   string;
-  price?:      number;
-  ticketStart: number;
-  bookNum?:    string;
 };
 
 type ScannedEntry = {
@@ -73,10 +61,6 @@ type AlertEntry = {
   message:   string;
   timestamp: string;
 };
-
-type VerifyResult =
-  | { valid: true;  slotNum: number; bookId: string; gameId: string; bookNum: string; gameName: string; price: number; ticketStart: number; status: string }
-  | { valid: false; reason: "not_found" | "settled" | "no_slot" | "wrong_ticket"; message: string; slotNum?: number; bookId?: string; gameName?: string; price?: number; inventoryStart?: number; ticketStart?: number };
 
 type ReceiptData = {
   raw:             string;
@@ -98,17 +82,14 @@ type CashesData = {
 
 type ClockStep =
   | "idle"
-  | "start"
-  | "scan_grid"
-  | "scan_choose"
-  | "scanning"
+  | "slot_select"
+  | "slot_tickets"
   | "preview"
   | "active"
-  | "clockout_scan"
+  | "clockout_slots"
   | "clockout_receipt_sales"
   | "clockout_receipt_cashes"
-  | "clockout_drawer"
-  | "clockout_confirm";
+  | "clockout_drawer";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Local-storage alerts
@@ -181,32 +162,17 @@ function fmtAlertTime(iso: string) {
   return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function extractTicketNum(serial: string): number | null {
-  const parts = serial.replace(/\s/g, "").split("-");
-  if (parts.length === 4 && parts[2].length === 3) {
-    const n = parseInt(parts[2], 10);
-    return isNaN(n) ? null : n;
-  }
-  return null;
-}
-
-function parseScannedSerial(raw: string): string | null {
-  const clean = raw.trim();
-  if (/^\d{4}-\d{7}-\d{3}-\d$/.test(clean)) return clean;
-  const digits = clean.replace(/\D/g, "");
-  if (digits.length === 15) {
-    return `${digits.slice(0, 4)}-${digits.slice(4, 11)}-${digits.slice(11, 14)}-${digits.slice(14)}`;
-  }
-  return null;
-}
-
 function getWeekRange() {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun
+  const day = now.getDay();
   const mon = new Date(now); mon.setDate(now.getDate() - ((day + 6) % 7)); mon.setHours(0, 0, 0, 0);
   const sun = new Date(mon); sun.setDate(mon.getDate() + 6); sun.setHours(23, 59, 59, 999);
   return { mon, sun };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
 
 const PRICE_TIERS = [1, 2, 5, 10, 20, 30, 50];
 const TIER_COLOR: Record<number, string> = {
@@ -232,72 +198,48 @@ function slotNumFromTier(tierIdx: number, colIdx: number) { return tierIdx * MAX
 const FOLD = { clipPath: "polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%)" };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Camera scanner component
+// Step progress indicator
 // ─────────────────────────────────────────────────────────────────────────────
 
-function LiveCameraScanner({ onDetect }: { onDetect: (serial: string) => void }) {
-  const videoRef    = useRef<HTMLVideoElement>(null);
-  const onDetectRef = useRef(onDetect);
-  onDetectRef.current = onDetect;
-  const [camError, setCamError] = useState("");
-
-  useEffect(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    let active  = true;
-    let cleanup: (() => void) | undefined;
-    (async () => {
-      try {
-        const { BrowserMultiFormatReader, BrowserCodeReader } = await import("@zxing/browser");
-        if (!active) return;
-        const reader = new BrowserMultiFormatReader();
-        cleanup = () => BrowserCodeReader.releaseAllStreams();
-        await reader.decodeFromConstraints(
-          { video: { facingMode: "environment" } }, el,
-          (result) => {
-            if (!active || !result) return;
-            const serial = parseScannedSerial(result.getText());
-            if (serial) { active = false; onDetectRef.current(serial); }
-          }
-        );
-      } catch (e) {
-        if (active) setCamError(e instanceof Error ? e.message : "Camera unavailable");
-      }
-    })();
-    return () => { active = false; cleanup?.(); };
-  }, []);
-
-  if (camError) return (
-    <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-      <AlertTriangle className="size-4 shrink-0 mt-0.5" />{camError}
-    </div>
-  );
-
+function StepBar({ steps, current }: { steps: string[]; current: number }) {
   return (
-    <div className="relative rounded-2xl overflow-hidden bg-black aspect-[4/3]">
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-      <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
-      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-        <div className="relative w-4/5 h-20 rounded-lg border-2 border-white/40 animate-pulse">
-          <div className="absolute -top-px -left-px  w-5 h-5 border-t-[3px] border-l-[3px] border-primary rounded-tl" />
-          <div className="absolute -top-px -right-px w-5 h-5 border-t-[3px] border-r-[3px] border-primary rounded-tr" />
-          <div className="absolute -bottom-px -left-px  w-5 h-5 border-b-[3px] border-l-[3px] border-primary rounded-bl" />
-          <div className="absolute -bottom-px -right-px w-5 h-5 border-b-[3px] border-r-[3px] border-primary rounded-br" />
+    <div className="flex items-center gap-1">
+      {steps.map((label, i) => (
+        <div key={i} className="flex items-center gap-1">
+          <div className={cn(
+            "flex items-center gap-1.5 px-2 py-1 rounded-lg transition-colors",
+            i === current ? "bg-primary/10" : ""
+          )}>
+            <span className={cn(
+              "size-4 rounded-full flex items-center justify-center text-[9px] font-bold border shrink-0",
+              i < current  ? "bg-primary/20 border-primary/30 text-primary"           :
+              i === current ? "bg-primary border-primary text-primary-foreground"      :
+              "bg-background border-muted-foreground/30 text-muted-foreground/40"
+            )}>
+              {i < current ? "✓" : i + 1}
+            </span>
+            <span className={cn(
+              "text-xs font-medium",
+              i === current ? "text-primary" : "text-muted-foreground/50"
+            )}>{label}</span>
+          </div>
+          {i < steps.length - 1 && (
+            <span className="text-muted-foreground/30 text-xs">→</span>
+          )}
         </div>
-        <p className="absolute bottom-3 text-white/90 text-xs font-medium drop-shadow">Point at the barcode</p>
-      </div>
+      ))}
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Receipt uploader component
+// Receipt uploader
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ReceiptUploaderProps = {
-  type:       "sales" | "cashes";
-  onSuccess:  (data: ReceiptData | CashesData) => void;
-  onSkip:     () => void;
+  type:      "sales" | "cashes";
+  onSuccess: (data: ReceiptData | CashesData) => void;
+  onSkip:    () => void;
 };
 
 function ReceiptUploader({ type, onSuccess, onSkip }: ReceiptUploaderProps) {
@@ -332,7 +274,6 @@ function ReceiptUploader({ type, onSuccess, onSkip }: ReceiptUploaderProps) {
     if (photos.length === 0) return;
     setErrors([]);
     setScanning(true);
-
     for (const { file } of photos) {
       try {
         const presignRes = await fetch("/api/upload/presign", {
@@ -343,27 +284,21 @@ function ReceiptUploader({ type, onSuccess, onSkip }: ReceiptUploaderProps) {
         if (!presignRes.ok) continue;
         const { url, key } = await presignRes.json() as { url: string; key: string };
         await fetch(url, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
-
-        const scanRes = await fetch("/api/receipt/scan-shift", {
+        const scanRes  = await fetch("/api/receipt/scan-shift", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ key, type }),
         });
         const scanData = await scanRes.json() as {
-          unclear: boolean; reason?: string;
-          valid: boolean; errors: string[]; data: Record<string, unknown>;
+          unclear: boolean; valid: boolean; errors: string[]; data: Record<string, unknown>;
         };
-
         if (scanRes.ok && !scanData.unclear && (scanData.valid || scanData.errors.length === 0)) {
           setScanning(false);
           onSuccess(scanData.data as ReceiptData | CashesData);
           return;
         }
-      } catch {
-        // try next photo
-      }
+      } catch { /* try next */ }
     }
-
     setErrors(["Could not read any of the uploaded receipts. Try taking clearer photos."]);
     setScanning(false);
   }
@@ -373,7 +308,7 @@ function ReceiptUploader({ type, onSuccess, onSkip }: ReceiptUploaderProps) {
       <div className="space-y-1">
         <p className="text-sm font-semibold">Upload {label} Receipt</p>
         <p className="text-xs text-muted-foreground">
-          Take photos or upload from your device (up to 10). The receipt must say &ldquo;{type === "sales" ? "SALES - TODAY" : "CASHES - TODAY"}&rdquo;.
+          Take photos or upload from your device (up to 10). Must say &ldquo;{type === "sales" ? "SALES - TODAY" : "CASHES - TODAY"}&rdquo;.
         </p>
       </div>
 
@@ -383,20 +318,15 @@ function ReceiptUploader({ type, onSuccess, onSkip }: ReceiptUploaderProps) {
             <div key={i} className="relative aspect-square rounded-xl overflow-hidden border bg-muted">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={p.preview} alt={`Photo ${i + 1}`} className="w-full h-full object-cover" />
-              <button
-                type="button" onClick={() => removePhoto(i)}
-                className="absolute top-1 right-1 bg-black/60 rounded-full p-0.5 text-white hover:bg-black/80 transition-colors"
-              >
+              <button type="button" onClick={() => removePhoto(i)}
+                className="absolute top-1 right-1 bg-black/60 rounded-full p-0.5 text-white hover:bg-black/80 transition-colors">
                 <X className="size-3" />
               </button>
             </div>
           ))}
           {photos.length < 10 && (
-            <button
-              type="button" disabled={scanning}
-              onClick={() => galleryRef.current?.click()}
-              className="aspect-square rounded-xl border-2 border-dashed flex items-center justify-center text-muted-foreground hover:border-primary hover:text-primary transition-colors disabled:opacity-50"
-            >
+            <button type="button" disabled={scanning} onClick={() => galleryRef.current?.click()}
+              className="aspect-square rounded-xl border-2 border-dashed flex items-center justify-center text-muted-foreground hover:border-primary hover:text-primary transition-colors disabled:opacity-50">
               <Upload className="size-5" />
             </button>
           )}
@@ -409,48 +339,39 @@ function ReceiptUploader({ type, onSuccess, onSkip }: ReceiptUploaderProps) {
         </div>
       )}
 
-      {errors.length > 0 && (
-        <div className="space-y-1.5">
-          {errors.map((e, i) => (
-            <div key={i} className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800">
-              <AlertTriangle className="size-4 shrink-0 mt-0.5" />{e}
-            </div>
-          ))}
+      {errors.map((e, i) => (
+        <div key={i} className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800">
+          <AlertTriangle className="size-4 shrink-0 mt-0.5" />{e}
         </div>
-      )}
+      ))}
 
-      <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden"
+      <input ref={cameraRef}  type="file" accept="image/*" capture="environment" className="hidden"
         onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
       <input ref={galleryRef} type="file" accept="image/*" multiple className="hidden"
         onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
 
       {photos.length === 0 ? (
         <div className="grid grid-cols-2 gap-3">
-          <button type="button" disabled={scanning}
-            onClick={() => cameraRef.current?.click()}
+          <button type="button" disabled={scanning} onClick={() => cameraRef.current?.click()}
             className="flex items-center justify-center gap-2 border-2 rounded-xl py-3 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all disabled:opacity-50">
-            <Camera className="size-4" /> Use Camera
+            <Camera className="size-4" /> Camera
           </button>
-          <button type="button" disabled={scanning}
-            onClick={() => galleryRef.current?.click()}
+          <button type="button" disabled={scanning} onClick={() => galleryRef.current?.click()}
             className="flex items-center justify-center gap-2 border-2 rounded-xl py-3 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all disabled:opacity-50">
             <Upload className="size-4" /> Upload
           </button>
         </div>
       ) : (
         <div className="grid grid-cols-3 gap-2">
-          <button type="button" disabled={scanning}
-            onClick={() => cameraRef.current?.click()}
-            className="flex items-center justify-center gap-1.5 border rounded-xl py-2.5 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all disabled:opacity-50">
+          <button type="button" disabled={scanning} onClick={() => cameraRef.current?.click()}
+            className="flex items-center justify-center border rounded-xl py-2.5 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all disabled:opacity-50">
             <Camera className="size-4" />
           </button>
-          <button type="button" disabled={scanning}
-            onClick={() => galleryRef.current?.click()}
-            className="flex items-center justify-center gap-1.5 border rounded-xl py-2.5 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all disabled:opacity-50">
+          <button type="button" disabled={scanning} onClick={() => galleryRef.current?.click()}
+            className="flex items-center justify-center border rounded-xl py-2.5 text-sm font-medium hover:border-primary hover:bg-primary/5 transition-all disabled:opacity-50">
             <Upload className="size-4" />
           </button>
-          <button type="button" disabled={scanning || photos.length === 0}
-            onClick={handleScan}
+          <button type="button" disabled={scanning || photos.length === 0} onClick={handleScan}
             className="flex items-center justify-center gap-1.5 bg-primary text-primary-foreground rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50">
             {scanning ? <RefreshCw className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
             {scanning ? "…" : "Scan"}
@@ -467,23 +388,162 @@ function ReceiptUploader({ type, onSuccess, onSkip }: ReceiptUploaderProps) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Employee slot grid — mirrors manager layout, read-only with status badges
+// Slot select grid — interactive, used at clock-in to pick slots to work
 // ─────────────────────────────────────────────────────────────────────────────
 
-function EmployeeSlotGrid({
-  slots, slotNames, tierCounts, scanned, onSoldOut,
+function SlotSelectGrid({
+  slots, slotNames, tierCounts, selected, onToggle,
 }: {
   slots:      SlotInfo[];
   slotNames:  Record<string, string>;
   tierCounts: Record<string, number>;
-  scanned:    ScannedEntry[];
-  onSoldOut?: (slotNum: number, bookId: string) => void;
+  selected:   Set<number>;
+  onToggle:   (slotNum: number) => void;
 }) {
-  const scannedSet = new Set(scanned.map(s => s.slotNum));
   const slotMap: Record<number, SlotInfo> = {};
   for (const s of slots) slotMap[s.slotNum] = s;
 
-  // If org has no tierCounts, derive minimum counts from occupied slots
+  const effectiveCounts = Object.values(tierCounts).some(c => c > 0)
+    ? tierCounts
+    : Object.fromEntries(
+        TIERS.map((t, ti) => {
+          const colMax = slots
+            .filter(s => s.bookId)
+            .filter(s => Math.floor((s.slotNum - 1) / MAX_PER_TIER) === ti)
+            .reduce((m, s) => Math.max(m, (s.slotNum - 1) % MAX_PER_TIER + 1), 0);
+          return [String(t.price), colMax];
+        })
+      );
+
+  const hasAny = Object.values(effectiveCounts).some(c => c > 0);
+  if (!hasAny) return (
+    <div className="py-10 text-center space-y-3">
+      <div className="size-14 rounded-full bg-muted flex items-center justify-center mx-auto">
+        <BookOpen className="size-6 text-muted-foreground" />
+      </div>
+      <p className="text-sm text-muted-foreground">No slots configured yet.</p>
+      <p className="text-xs text-muted-foreground">Contact your manager to set up the slot board.</p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-2.5">
+      {TIERS.map((tier, ti) => {
+        const count = effectiveCounts[String(tier.price)] ?? 0;
+        if (count === 0) return null;
+        return (
+          <div key={tier.price} className="flex items-start gap-2">
+            <div className={cn(
+              "rounded-xl border px-2 py-2.5 flex flex-col items-center justify-center gap-0.5 w-12 shrink-0",
+              tier.headerBg, tier.border
+            )}>
+              <span className={cn("text-sm font-black leading-none", tier.color)}>{tier.label}</span>
+              <span className="text-[8px] text-muted-foreground">ticket</span>
+            </div>
+
+            <div className="flex-1 flex flex-wrap gap-1.5">
+              {Array.from({ length: count }, (_, ci) => {
+                const sn         = slotNumFromTier(ti, ci);
+                const slot       = slotMap[sn];
+                const hasBook    = !!slot?.bookId;
+                const isSoldOut  = slot?.status === "settled";
+                const isInactive = slot?.status === "inactive";
+                const canSelect  = hasBook && !isSoldOut;
+                const isSelected = selected.has(sn);
+                const customName = slotNames[String(sn)] ?? "";
+
+                return (
+                  <button
+                    key={ci}
+                    type="button"
+                    onClick={() => { if (canSelect) onToggle(sn); }}
+                    disabled={!canSelect}
+                    className="relative shrink-0"
+                  >
+                    <div
+                      style={FOLD}
+                      className={cn(
+                        "w-[96px] min-h-[96px] rounded-xl border p-2 space-y-1 transition-all select-none",
+                        !canSelect && "opacity-40 cursor-not-allowed",
+                        hasBook && !isSoldOut
+                          ? cn(tier.bg, tier.border)
+                          : isSoldOut
+                          ? "bg-gray-50 border-gray-200"
+                          : "bg-background border-dashed border-muted-foreground/20",
+                        isSelected
+                          ? "ring-2 ring-primary ring-offset-1 shadow-md"
+                          : canSelect
+                          ? "hover:ring-2 hover:ring-primary/40 hover:ring-offset-1 cursor-pointer"
+                          : ""
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-0.5">
+                        <span className="text-[8px] font-bold text-muted-foreground/60">#{sn}</span>
+                        {customName && (
+                          <span className={cn("text-[7px] font-bold uppercase truncate max-w-[54px]", tier.color)}>
+                            {customName}
+                          </span>
+                        )}
+                      </div>
+
+                      {hasBook ? (
+                        <div className="space-y-0.5">
+                          <p className="text-[9px] font-semibold leading-tight line-clamp-2">
+                            {slot.gameName ?? `Game ${slot.gameId ?? ""}`}
+                          </p>
+                          <p className="text-[8px] text-muted-foreground font-mono">{slot.pack}</p>
+                          <div className={cn(
+                            "inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[7px] font-bold mt-0.5",
+                            isSoldOut  ? "bg-gray-100 text-gray-500"    :
+                            isInactive ? "bg-amber-50 text-amber-700"   :
+                            "bg-emerald-50 text-emerald-700"
+                          )}>
+                            <span className={cn("size-1 rounded-full",
+                              isSoldOut  ? "bg-gray-400"  :
+                              isInactive ? "bg-amber-500" : "bg-emerald-500"
+                            )} />
+                            {isSoldOut ? "Sold Out" : isInactive ? "Inactive" : "Active"}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-10">
+                          <span className="text-[8px] text-muted-foreground/40">Empty</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {isSelected && (
+                      <div className="absolute top-0.5 right-0.5 pointer-events-none">
+                        <CheckCircle className="size-4 text-primary drop-shadow-sm" />
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Active-shift slot grid — read-only with status badges + sold-out buttons
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ActiveSlotGrid({
+  slots, slotNames, tierCounts, activeSlots, onSoldOut,
+}: {
+  slots:       SlotInfo[];
+  slotNames:   Record<string, string>;
+  tierCounts:  Record<string, number>;
+  activeSlots: Set<number>;
+  onSoldOut?:  (slotNum: number, bookId: string) => void;
+}) {
+  const slotMap: Record<number, SlotInfo> = {};
+  for (const s of slots) slotMap[s.slotNum] = s;
+
   const effectiveCounts = Object.values(tierCounts).some(c => c > 0)
     ? tierCounts
     : Object.fromEntries(
@@ -508,7 +568,6 @@ function EmployeeSlotGrid({
         if (count === 0) return null;
         return (
           <div key={tier.price} className="flex items-start gap-2">
-            {/* Row label */}
             <div className={cn(
               "rounded-xl border px-2 py-2.5 flex flex-col items-center justify-center gap-0.5 w-12 shrink-0",
               tier.headerBg, tier.border
@@ -517,7 +576,6 @@ function EmployeeSlotGrid({
               <span className="text-[8px] text-muted-foreground">ticket</span>
             </div>
 
-            {/* Slot cards */}
             <div className="flex-1 flex flex-wrap gap-1.5">
               {Array.from({ length: count }, (_, ci) => {
                 const sn         = slotNumFromTier(ti, ci);
@@ -525,7 +583,7 @@ function EmployeeSlotGrid({
                 const hasBook    = !!slot?.bookId;
                 const isSoldOut  = slot?.status === "settled";
                 const isInactive = slot?.status === "inactive";
-                const isScanned  = scannedSet.has(sn);
+                const isWorking  = activeSlots.has(sn);
                 const customName = slotNames[String(sn)] ?? "";
 
                 return (
@@ -535,12 +593,11 @@ function EmployeeSlotGrid({
                       className={cn(
                         "w-[96px] min-h-[96px] rounded-xl border p-2 space-y-1",
                         hasBook && !isSoldOut ? cn(tier.bg, tier.border) :
-                        isSoldOut             ? "bg-gray-50 border-gray-200"       :
+                        isSoldOut             ? "bg-gray-50 border-gray-200" :
                         "bg-background border-dashed border-muted-foreground/20",
-                        isScanned && "ring-2 ring-emerald-500 ring-offset-1"
+                        isWorking && "ring-2 ring-emerald-500 ring-offset-1"
                       )}
                     >
-                      {/* Slot # + custom name */}
                       <div className="flex items-center justify-between gap-0.5">
                         <span className="text-[8px] font-bold text-muted-foreground/60">#{sn}</span>
                         {customName && (
@@ -550,15 +607,12 @@ function EmployeeSlotGrid({
                         )}
                       </div>
 
-                      {/* Content */}
                       {hasBook ? (
                         <div className="space-y-0.5">
                           <p className="text-[9px] font-semibold leading-tight line-clamp-2">
                             {slot.gameName ?? `Game ${slot.gameId ?? ""}`}
                           </p>
                           <p className="text-[8px] text-muted-foreground font-mono">{slot.pack}</p>
-
-                          {/* Status badge */}
                           <div className={cn(
                             "inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[7px] font-bold mt-0.5",
                             isSoldOut  ? "bg-gray-100 text-gray-500"    :
@@ -566,14 +620,11 @@ function EmployeeSlotGrid({
                             "bg-emerald-50 text-emerald-700"
                           )}>
                             <span className={cn("size-1 rounded-full",
-                              isSoldOut  ? "bg-gray-400"    :
-                              isInactive ? "bg-amber-500"   :
-                              "bg-emerald-500"
+                              isSoldOut  ? "bg-gray-400"  :
+                              isInactive ? "bg-amber-500" : "bg-emerald-500"
                             )} />
                             {isSoldOut ? "Sold Out" : isInactive ? "Inactive" : "Active"}
                           </div>
-
-                          {/* Sold Out action button (active shift only) */}
                           {onSoldOut && !isSoldOut && slot.bookId && (
                             <button
                               onClick={() => onSoldOut(sn, slot.bookId!)}
@@ -590,8 +641,7 @@ function EmployeeSlotGrid({
                       )}
                     </div>
 
-                    {/* Scanned check overlay */}
-                    {isScanned && (
+                    {isWorking && (
                       <div className="absolute top-0.5 right-0.5 drop-shadow-sm">
                         <CheckCircle className="size-3.5 text-emerald-600" />
                       </div>
@@ -603,94 +653,6 @@ function EmployeeSlotGrid({
           </div>
         );
       })}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Slot-assign modal — shown when a book has no manager-assigned slot
-// ─────────────────────────────────────────────────────────────────────────────
-
-function SlotAssignModal({
-  entry, slots, slotNames, onAssign, onSkip, onClose,
-}: {
-  entry:     PendingSlotEntry;
-  slots:     SlotInfo[];
-  slotNames: Record<string, string>;
-  onAssign:  (slotNum: number) => void;
-  onSkip:    () => void;
-  onClose:   () => void;
-}) {
-  const emptySlots = slots.filter(s => !s.bookId).sort((a, b) => a.slotNum - b.slotNum);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4">
-      <div className="bg-background border rounded-3xl w-full max-w-sm shadow-2xl p-5 space-y-4 max-h-[80vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1.5 mb-1">
-              <div className="size-5 rounded-full bg-red-100 flex items-center justify-center shrink-0">
-                <AlertTriangle className="size-3 text-red-600" />
-              </div>
-              <p className="font-bold text-sm text-red-700">Slot Not Assigned — Priority Error</p>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Book <span className="font-mono font-semibold">{entry.bookNum ?? entry.bookId.slice(0, 8)}</span>
-              {entry.gameName ? ` · ${entry.gameName}` : ""} has no slot assigned by manager.
-              A priority error will be sent immediately.
-            </p>
-          </div>
-          <button onClick={onClose} className="shrink-0 p-1 text-muted-foreground hover:text-foreground">
-            <X className="size-4" />
-          </button>
-        </div>
-
-        {/* Empty slot list */}
-        <div className="flex-1 overflow-y-auto space-y-1.5 min-h-0">
-          <p className="text-xs font-semibold text-muted-foreground">Select a slot to self-assign:</p>
-          {emptySlots.length === 0 ? (
-            <p className="text-xs text-muted-foreground py-6 text-center">No empty slots available.</p>
-          ) : (
-            emptySlots.map(sl => {
-              const tierIdx  = Math.floor((sl.slotNum - 1) / MAX_PER_TIER);
-              const slotTier = TIERS[tierIdx];
-              const name     = slotNames[String(sl.slotNum)] ?? "";
-              const isMatch  = slotTier?.price === entry.price;
-              return (
-                <button
-                  key={sl.slotNum}
-                  onClick={() => onAssign(sl.slotNum)}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left hover:bg-muted/50 transition-colors",
-                    isMatch ? "border-primary/40 bg-primary/5" : ""
-                  )}
-                >
-                  <div className={cn(
-                    "size-8 rounded-lg border flex items-center justify-center text-[10px] font-black shrink-0",
-                    slotTier ? cn(slotTier.bg, slotTier.color, slotTier.border) : "bg-muted text-muted-foreground"
-                  )}>
-                    {slotTier?.label ?? `#${sl.slotNum}`}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold">Slot #{sl.slotNum}</p>
-                    {name && <p className="text-xs text-muted-foreground truncate">{name}</p>}
-                    {isMatch && <p className="text-[10px] text-primary font-medium">Matching tier</p>}
-                  </div>
-                  <ArrowRight className="size-4 text-muted-foreground shrink-0" />
-                </button>
-              );
-            })
-          )}
-        </div>
-
-        <button
-          onClick={onSkip}
-          className="shrink-0 w-full border rounded-2xl py-2.5 text-sm text-muted-foreground hover:bg-muted/40 transition-colors"
-        >
-          Add without slot (auto-assign at clock-in)
-        </button>
-      </div>
     </div>
   );
 }
@@ -710,29 +672,28 @@ export default function EmployeeDashboard() {
   const [tierCounts, setTierCounts] = useState<Record<string, number>>({});
   const [loading,    setLoading]    = useState(true);
 
-  // ── UI state ──────────────────────────────────────────────────────────────
-  const [tab,        setTab]        = useState<Tab>("shift");
-  const [clockStep,  setClockStep]  = useState<ClockStep>("idle");
-  const [scanMode,   setScanMode]   = useState<"choose" | "camera" | "manual">("choose");
-  const [manualVal,  setManualVal]  = useState("");
-  const [manualErr,  setManualErr]  = useState("");
-  const [scanned,    setScanned]    = useState<ScannedEntry[]>([]);
-  const [scanError,  setScanError]  = useState("");
-  const [verifying,        setVerifying]        = useState(false);
+  // ── UI ────────────────────────────────────────────────────────────────────
+  const [tab,       setTab]       = useState<Tab>("shift");
+  const [clockStep, setClockStep] = useState<ClockStep>("idle");
+
+  // Clock-in state
+  const [selectedSlots,    setSelectedSlots]    = useState<number[]>([]);
+  const [slotTicketInputs, setSlotTicketInputs] = useState<Record<number, string>>({});
+  const [clockInError,     setClockInError]     = useState("");
   const [submitting,       setSubmitting]       = useState(false);
-  const [detectedScanMode, setDetectedScanMode] = useState<"sequential" | "random" | null>(null);
-  const [noSlotEntry,      setNoSlotEntry]      = useState<PendingSlotEntry | null>(null);
-  const [summary,    setSummary]    = useState<{ finalCalc: number; drawerCash: number; discrepancySeverity: string; diff: number } | null>(null);
 
   // Clock-out state
-  const [endTicket,      setEndTicket]      = useState("");
+  const [slotEndInputs,  setSlotEndInputs]  = useState<Record<number, string>>({});
   const [salesReceipt,   setSalesReceipt]   = useState<ReceiptData | null>(null);
   const [cashesReceipt,  setCashesReceipt]  = useState<CashesData | null>(null);
   const [drawerCash,     setDrawerCash]     = useState("");
   const [discrepNote,    setDiscrepNote]    = useState("");
+  const [summary,        setSummary]        = useState<{
+    finalCalc: number; drawerCash: number; discrepancySeverity: string; diff: number;
+  } | null>(null);
 
   // Alerts
-  const [alerts,     setAlerts]     = useState<AlertEntry[]>([]);
+  const [alerts,       setAlerts]       = useState<AlertEntry[]>([]);
   const [unreadAlerts, setUnreadAlerts] = useState(0);
 
   const elapsed = useElapsed(active?.clockIn ?? null);
@@ -772,7 +733,7 @@ export default function EmployeeDashboard() {
     const res = await fetch("/api/shifts");
     if (res.ok) {
       const data = await res.json() as { shifts: Shift[]; active: Shift | null };
-      setShifts(data.shifts.filter((s) => s.status === "completed"));
+      setShifts(data.shifts.filter(s => s.status === "completed"));
       setActive(data.active);
       if (data.active) setClockStep("active");
     }
@@ -781,114 +742,51 @@ export default function EmployeeDashboard() {
 
   useEffect(() => { load(); loadSlots(); }, [load, loadSlots]);
 
-  // Load alerts from localStorage
   useEffect(() => {
     if (!user?.id) return;
     const stored = loadAlerts(user.id);
     setAlerts(stored);
-    setUnreadAlerts(stored.filter((a) => a.severity === "error").length);
+    setUnreadAlerts(stored.filter(a => a.severity === "error").length);
   }, [user?.id]);
 
   useEffect(() => { if (active) setClockStep("active"); }, [active]);
 
-  // ── Push alert helper ─────────────────────────────────────────────────────
+  // ── Alert helper ──────────────────────────────────────────────────────────
 
   function addAlert(severity: AlertEntry["severity"], message: string) {
     if (!user?.id) return;
     const next = pushAlert(user.id, severity, message);
     setAlerts(next);
-    if (severity === "error") setUnreadAlerts((p) => p + 1);
+    if (severity === "error") setUnreadAlerts(p => p + 1);
   }
 
   // ── Clock In ──────────────────────────────────────────────────────────────
 
-  async function addScannedEntry(serial: string) {
-    setScanError("");
-
-    if (scanned.some((s) => s.serial === serial)) {
-      setScanError("This ticket is already in the list."); return;
-    }
-
-    setVerifying(true);
-    try {
-      const res  = await fetch(`/api/employee/verify-ticket?serial=${encodeURIComponent(serial)}`);
-      const data = await res.json() as VerifyResult;
-
-      if (!data.valid) {
-        if (data.reason === "no_slot") {
-          // Show slot-picker modal — employee must assign a slot (PRIORITY ERROR path)
-          const parts = serial.replace(/\s/g, "").split("-");
-          setNoSlotEntry({
-            serial,
-            bookId:      data.bookId ?? "",
-            gameId:      parts[0],
-            gameName:    data.gameName,
-            price:       data.price,
-            ticketStart: data.inventoryStart ?? extractTicketNum(serial) ?? 0,
-            bookNum:     parts[1],
-          });
-        } else {
-          // Hard block: not_found, settled, wrong_ticket
-          setScanError(data.message);
-          addAlert("error", data.message);
-        }
-        setVerifying(false);
-        return;
-      }
-
-      const newEntry: ScannedEntry = {
-        serial,
-        ticketStart: data.ticketStart,
-        slotNum:     data.slotNum,
-        bookId:      data.bookId,
-        gameName:    data.gameName,
-        price:       data.price,
-      };
-      setScanned((prev) => {
-        const next = [...prev, newEntry];
-        // Detect sequential vs random mode from ticket numbers
-        if (next.length >= 2) {
-          const tickets = next.map(e => e.ticketStart);
-          let seq = true;
-          for (let i = 1; i < tickets.length; i++) {
-            if (tickets[i] <= tickets[i - 1]) { seq = false; break; }
-          }
-          setDetectedScanMode(seq ? "sequential" : "random");
-        } else {
-          setDetectedScanMode(null);
-        }
-        return next;
-      });
-      setScanMode("choose");
-      setManualVal("");
-    } catch {
-      setScanError("Network error verifying ticket. Check your connection.");
-    } finally {
-      setVerifying(false);
-    }
-  }
-
   async function handleClockIn() {
-    if (scanned.length === 0) return;
+    if (selectedSlots.length === 0) return;
     setSubmitting(true);
-    setScanError("");
+    setClockInError("");
+
+    const entries = [...selectedSlots].sort((a, b) => a - b).map(sn => {
+      const slot = slots.find(s => s.slotNum === sn)!;
+      return { slotNum: sn, bookId: slot.bookId!, ticketStart: parseInt(slotTicketInputs[sn], 10) };
+    });
+
     const r = await fetch("/api/shifts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action:  "clock_in",
-        entries: scanned.map((s) => ({ serial: s.serial, slotNum: s.slotNum || undefined })),
-      }),
+      body: JSON.stringify({ action: "clock_in", entries }),
     });
     const data = await r.json() as { shift?: Shift & { shiftBooks?: ScannedEntry[] }; error?: string };
     if (r.ok && data.shift) {
       setActive(data.shift as Shift);
       setClockStep("active");
-      setScanned([]);
-      addAlert("info", `Shift started — ${scanned.length} book(s) registered.`);
+      setSelectedSlots([]);
+      setSlotTicketInputs({});
+      addAlert("info", `Shift started — ${entries.length} slot(s) registered.`);
     } else {
       const msg = data.error ?? "Failed to clock in.";
-      setScanError(msg);
+      setClockInError(msg);
       addAlert("error", msg);
     }
     setSubmitting(false);
@@ -897,19 +795,26 @@ export default function EmployeeDashboard() {
   // ── Clock Out ─────────────────────────────────────────────────────────────
 
   async function submitClockOut() {
-    if (!active || !endTicket || !drawerCash) return;
+    if (!active || !drawerCash) return;
     setSubmitting(true);
+
+    const books = active.shiftBooks ?? [{ slotNum: active.slotNum, ticketStart: active.ticketStart, bookId: "", serial: "" }];
+    const shiftEndEntries = books.map(sb => ({
+      slotNum:   sb.slotNum,
+      ticketEnd: parseInt(slotEndInputs[sb.slotNum] ?? "0", 10),
+    }));
+
     const r = await fetch("/api/shifts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        action:      "clock_out",
-        shiftId:     active.shiftId,
-        ticketEnd:   Number(endTicket),
-        drawerCash:  Number(drawerCash),
+        action:          "clock_out",
+        shiftId:         active.shiftId,
+        shiftEndEntries,
+        drawerCash:      Number(drawerCash),
         discrepancyNote: discrepNote || undefined,
-        salesReceipt:  salesReceipt  ?? undefined,
-        cashesReceipt: cashesReceipt ?? undefined,
+        salesReceipt:    salesReceipt  ?? undefined,
+        cashesReceipt:   cashesReceipt ?? undefined,
       }),
     });
     const data = await r.json() as {
@@ -919,18 +824,22 @@ export default function EmployeeDashboard() {
     };
     if (r.ok) {
       setSummary({ finalCalc: data.finalCalc, drawerCash: data.drawerCash, discrepancySeverity: data.discrepancySeverity, diff: data.diff });
-      setActive(null);
-      setClockStep("idle");
-      setShifts((prev) => [{
+      const totalSold = shiftEndEntries.reduce((sum, e) => {
+        const sb = books.find(b => b.slotNum === e.slotNum);
+        return sum + Math.max(0, e.ticketEnd - (sb?.ticketStart ?? 0));
+      }, 0);
+      setShifts(prev => [{
         ...active,
-        ticketEnd: Number(endTicket),
-        clockOut:  new Date().toISOString(),
-        status:    "completed",
-        sold:      Math.max(0, Number(endTicket) - active.ticketStart),
-        finalCalc: data.finalCalc,
-        drawerCash: data.drawerCash,
+        ticketEnd:           shiftEndEntries[0]?.ticketEnd ?? 0,
+        clockOut:            new Date().toISOString(),
+        status:              "completed",
+        sold:                totalSold,
+        finalCalc:           data.finalCalc,
+        drawerCash:          data.drawerCash,
         discrepancySeverity: data.discrepancySeverity as Shift["discrepancySeverity"],
       }, ...prev]);
+      setActive(null);
+      setClockStep("idle");
       resetClockOut();
     } else {
       addAlert("error", data.error ?? "Clock out failed.");
@@ -939,8 +848,11 @@ export default function EmployeeDashboard() {
   }
 
   function resetClockOut() {
-    setEndTicket(""); setSalesReceipt(null); setCashesReceipt(null);
-    setDrawerCash(""); setDiscrepNote("");
+    setSlotEndInputs({});
+    setSalesReceipt(null);
+    setCashesReceipt(null);
+    setDrawerCash("");
+    setDiscrepNote("");
   }
 
   // ── Book sold out (mid-shift) ─────────────────────────────────────────────
@@ -952,7 +864,7 @@ export default function EmployeeDashboard() {
       body: JSON.stringify({ action: "book_sold_out", bookId, slotNum }),
     });
     if (r.ok) {
-      addAlert("info", `Slot #${slotNum} — book marked as sold out. Manager notified.`);
+      addAlert("info", `Slot #${slotNum} — book marked sold out. Manager notified.`);
       await loadSlots();
     } else {
       const d = await r.json() as { error?: string };
@@ -960,80 +872,50 @@ export default function EmployeeDashboard() {
     }
   }
 
-  // ── No-slot entry: employee assigns their own slot ────────────────────────
+  // ── Derived values ────────────────────────────────────────────────────────
 
-  async function handleNoSlotAssign(slotNum: number) {
-    if (!noSlotEntry) return;
-    // Fire-and-forget PRIORITY ERROR notification to manager
-    fetch("/api/shifts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action:   "notify_slot_change",
-        slotNum,
-        priority: true,
-        message:  `PRIORITY ERROR: Book ${noSlotEntry.bookNum ?? noSlotEntry.bookId.slice(0, 8)} (${noSlotEntry.gameName ?? `Game ${noSlotEntry.gameId ?? ""}`}) was scanned but has no slot assigned by manager. Employee self-assigned to Slot #${slotNum}.`,
-      }),
-    }).catch(() => {});
+  const activeBookSet = new Set((active?.shiftBooks ?? []).map(sb => sb.slotNum));
 
-    const entry: ScannedEntry = {
-      serial:      noSlotEntry.serial,
-      ticketStart: noSlotEntry.ticketStart,
-      slotNum,
-      bookId:      noSlotEntry.bookId,
-      gameName:    noSlotEntry.gameName,
-      price:       noSlotEntry.price,
-    };
-    setScanned((prev) => {
-      const next = [...prev, entry];
-      if (next.length >= 2) {
-        const tickets = next.map(e => e.ticketStart);
-        let seq = true;
-        for (let i = 1; i < tickets.length; i++) {
-          if (tickets[i] <= tickets[i - 1]) { seq = false; break; }
-        }
-        setDetectedScanMode(seq ? "sequential" : "random");
+  const shiftBooksForClockout = active?.shiftBooks?.length
+    ? active.shiftBooks
+    : active
+    ? [{ slotNum: active.slotNum, ticketStart: active.ticketStart, bookId: "", serial: "", gameName: active.gameName, price: active.bookPrice }]
+    : [];
+
+  const canClockOut = shiftBooksForClockout.length > 0 && shiftBooksForClockout.every(sb => {
+    const end = parseInt(slotEndInputs[sb.slotNum] ?? "", 10);
+    return !isNaN(end) && end > sb.ticketStart;
+  });
+
+  const liveCalc = (() => {
+    let ticketSale = 0;
+    for (const sb of shiftBooksForClockout) {
+      const end = parseInt(slotEndInputs[sb.slotNum] ?? "", 10);
+      if (!isNaN(end) && end > sb.ticketStart) {
+        ticketSale += (end - sb.ticketStart) * (sb.price ?? 0);
       }
-      return next;
-    });
-    setNoSlotEntry(null);
-    setScanError("");
-    addAlert("warning", `PRIORITY ERROR sent to manager: Book ${noSlotEntry.bookNum ?? "?"} self-assigned to Slot #${slotNum}.`);
-  }
+    }
+    return ticketSale + (salesReceipt?.onlineNetSales ?? 0) + (salesReceipt?.cashlessInstant ?? 0) - (cashesReceipt?.totalCashes ?? 0);
+  })();
 
-  function handleNoSlotSkip() {
-    if (!noSlotEntry) return;
-    setScanned((prev) => [...prev, {
-      serial:      noSlotEntry.serial,
-      ticketStart: noSlotEntry.ticketStart,
-      slotNum:     0,
-      bookId:      noSlotEntry.bookId,
-      gameName:    noSlotEntry.gameName,
-      price:       noSlotEntry.price,
-    }]);
-    setNoSlotEntry(null);
-    setScanError("⚠ Book added without slot — will be auto-assigned at clock-in.");
-  }
+  const drawerNum = Number(drawerCash) || 0;
+  const liveDiff  = liveCalc - drawerNum;
+  const needsNote = drawerCash ? Math.abs(liveDiff) > 0.01 : false;
 
-  // ── Dashboard metrics ─────────────────────────────────────────────────────
-
-  const completed = shifts;
-  const totalSold = completed.reduce((s, sh) => s + (sh.sold ?? 0), 0);
-  const totalMs   = completed.reduce((s, sh) => {
+  // Dashboard metrics
+  const completed    = shifts;
+  const totalSold    = completed.reduce((s, sh) => s + (sh.sold ?? 0), 0);
+  const totalMs      = completed.reduce((s, sh) => {
     if (!sh.clockOut) return s;
     return s + (new Date(sh.clockOut).getTime() - new Date(sh.clockIn).getTime());
   }, 0);
-  const avgPerShift = completed.length > 0 ? Math.round(totalSold / completed.length) : 0;
-
-  // Tickets by price tier
+  const avgPerShift  = completed.length > 0 ? Math.round(totalSold / completed.length) : 0;
   const soldByTier: Record<number, number> = {};
   for (const sh of completed) {
     const price = sh.bookPrice ?? 0;
     if (price > 0) soldByTier[price] = (soldByTier[price] ?? 0) + (sh.sold ?? 0);
   }
   const maxTierSold = Math.max(1, ...Object.values(soldByTier));
-
-  // Hours this week
   const { mon, sun } = getWeekRange();
   const weekMs = completed.reduce((s, sh) => {
     if (!sh.clockOut) return s;
@@ -1042,32 +924,14 @@ export default function EmployeeDashboard() {
     return s + (new Date(sh.clockOut).getTime() - ci.getTime());
   }, 0);
 
-  // ── Render helpers ────────────────────────────────────────────────────────
-
-  const canClockOut = !!endTicket && Number(endTicket) > (active?.ticketStart ?? 0);
   const isOver  = summary?.discrepancySeverity === "over";
   const isShort = summary?.discrepancySeverity === "short";
-
-  // Final calc preview (before submit)
-  const liveCalc = (() => {
-    const ticketSale = active && endTicket
-      ? Math.max(0, Number(endTicket) - active.ticketStart) * (active.bookPrice ?? 0)
-      : 0;
-    const onlineNet    = salesReceipt?.onlineNetSales  ?? 0;
-    const cashlessInst = salesReceipt?.cashlessInstant ?? 0;
-    const totalCashes  = cashesReceipt?.totalCashes    ?? 0;
-    return ticketSale + onlineNet + cashlessInst - totalCashes;
-  })();
-
-  const drawerNum    = Number(drawerCash) || 0;
-  const liveDiff     = liveCalc - drawerNum;
-  const needsNote    = liveDiff > 0.01;
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col">
 
-      {/* Shift complete summary modal */}
+      {/* ── Shift complete summary modal ── */}
       {summary && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-background border rounded-3xl p-7 w-full max-w-sm space-y-5 shadow-2xl">
@@ -1084,7 +948,9 @@ export default function EmployeeDashboard() {
               </h2>
               {(isOver || isShort) && (
                 <p className={cn("text-sm font-medium", isOver ? "text-red-600" : "text-amber-600")}>
-                  {isOver ? `$${Math.abs(summary.diff).toFixed(2)} over drawer` : `Drawer $${Math.abs(summary.diff).toFixed(2)} over calculated`}
+                  {isOver
+                    ? `$${Math.abs(summary.diff).toFixed(2)} over drawer`
+                    : `Drawer $${Math.abs(summary.diff).toFixed(2)} over calculated`}
                 </p>
               )}
             </div>
@@ -1092,7 +958,7 @@ export default function EmployeeDashboard() {
               {[
                 { label: "Calculated", value: `$${summary.finalCalc.toFixed(2)}` },
                 { label: "Drawer",     value: `$${summary.drawerCash.toFixed(2)}` },
-              ].map((s) => (
+              ].map(s => (
                 <div key={s.label} className="border rounded-2xl py-3">
                   <p className="text-xl font-bold">{s.value}</p>
                   <p className="text-xs text-muted-foreground mt-0.5">{s.label}</p>
@@ -1107,29 +973,20 @@ export default function EmployeeDashboard() {
         </div>
       )}
 
-      {/* Slot-assign modal — PRIORITY ERROR path */}
-      {noSlotEntry && (
-        <SlotAssignModal
-          entry={noSlotEntry}
-          slots={slots}
-          slotNames={slotNames}
-          onAssign={handleNoSlotAssign}
-          onSkip={handleNoSlotSkip}
-          onClose={() => setNoSlotEntry(null)}
-        />
-      )}
-
-      {/* Active shift timer pill */}
+      {/* ── Active shift timer pill ── */}
       {active && (
         <div className="px-4 pt-3 flex justify-center">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
             <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
             Shift in progress · {fmtDuration(elapsed)}
+            {(active.shiftBooks?.length ?? 0) > 1 && (
+              <span className="ml-1 text-emerald-600 opacity-70">· {active.shiftBooks!.length} slots</span>
+            )}
           </div>
         </div>
       )}
 
-      {/* Tab bar */}
+      {/* ── Tab bar ── */}
       <div className="border-b px-4 mt-1">
         <div className="flex max-w-lg mx-auto gap-0">
           {([
@@ -1137,14 +994,11 @@ export default function EmployeeDashboard() {
             { id: "dashboard", label: "Dashboard",                           icon: BarChart2 },
             { id: "alerts",    label: "Alerts",                              icon: Bell,     badge: unreadAlerts },
           ] as { id: Tab; label: string; icon: React.ElementType; badge?: number }[]).map(({ id, label, icon: Icon, badge }) => (
-            <button
-              key={id}
+            <button key={id}
               onClick={() => { setTab(id); if (id === "alerts") setUnreadAlerts(0); }}
               className={cn(
                 "flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors relative",
-                tab === id
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
+                tab === id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
               )}
             >
               <Icon className="size-4" />
@@ -1163,11 +1017,677 @@ export default function EmployeeDashboard() {
       <main className="max-w-lg mx-auto w-full px-4 py-6 space-y-5">
 
         {/* ══════════════════════════════════════════════════════════════════
+            SHIFT TAB
+        ══════════════════════════════════════════════════════════════════ */}
+        {tab === "shift" && (
+          <>
+
+            {/* ── IDLE ── */}
+            {clockStep === "idle" && (
+              <div className="flex flex-col items-center justify-center py-14 space-y-6 text-center">
+                <div className="size-20 rounded-full bg-primary/10 flex items-center justify-center">
+                  <Clock className="size-10 text-primary" />
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-lg font-bold">Ready to start your shift?</p>
+                  <p className="text-sm text-muted-foreground">
+                    Hi {user?.name?.split(" ")[0] ?? "there"} — select your slots to begin.
+                  </p>
+                </div>
+                <button
+                  onClick={() => { setClockStep("slot_select"); setClockInError(""); }}
+                  className="w-full max-w-xs flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-base hover:opacity-90 transition-opacity shadow-sm"
+                >
+                  <Clock className="size-5" /> Clock In
+                </button>
+              </div>
+            )}
+
+            {/* ── SLOT SELECT ── */}
+            {clockStep === "slot_select" && (
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => { setClockStep("idle"); setSelectedSlots([]); }}
+                      className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
+                    <div className="flex-1">
+                      <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={0} />
+                    </div>
+                  </div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-base font-bold">Select Your Slots</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Tap each slot you will be operating during this shift.
+                      </p>
+                    </div>
+                    {selectedSlots.length > 0 && (
+                      <span className="shrink-0 text-xs bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded-full border border-primary/20">
+                        {selectedSlots.length} selected
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {clockInError && (
+                  <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/8 border border-destructive/15 rounded-xl px-4 py-3">
+                    <AlertTriangle className="size-4 shrink-0 mt-0.5" />{clockInError}
+                  </div>
+                )}
+
+                {loading ? (
+                  <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+                    <RefreshCw className="size-4 animate-spin" /> Loading slots…
+                  </div>
+                ) : (
+                  <SlotSelectGrid
+                    slots={slots}
+                    slotNames={slotNames}
+                    tierCounts={tierCounts}
+                    selected={new Set(selectedSlots)}
+                    onToggle={sn => setSelectedSlots(prev =>
+                      prev.includes(sn) ? prev.filter(n => n !== sn) : [...prev, sn]
+                    )}
+                  />
+                )}
+
+                <button
+                  onClick={() => {
+                    if (selectedSlots.length === 0) { setClockInError("Select at least one slot to continue."); return; }
+                    setClockInError("");
+                    setClockStep("slot_tickets");
+                  }}
+                  disabled={selectedSlots.length === 0}
+                  className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50 shadow-sm"
+                >
+                  <ArrowRight className="size-4" />
+                  Continue with {selectedSlots.length > 0
+                    ? `${selectedSlots.length} slot${selectedSlots.length !== 1 ? "s" : ""}`
+                    : "selected slots"}
+                </button>
+              </div>
+            )}
+
+            {/* ── SLOT TICKETS ── */}
+            {clockStep === "slot_tickets" && (
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => { setClockStep("slot_select"); setClockInError(""); }}
+                      className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
+                    <div className="flex-1">
+                      <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={1} />
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-base font-bold">Enter Starting Ticket Numbers</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Enter the number on the first unsold ticket of each book exactly as printed.
+                    </p>
+                  </div>
+                </div>
+
+                {clockInError && (
+                  <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/8 border border-destructive/15 rounded-xl px-4 py-3">
+                    <AlertTriangle className="size-4 shrink-0 mt-0.5" />{clockInError}
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  {[...selectedSlots].sort((a, b) => a - b).map(sn => {
+                    const slot      = slots.find(s => s.slotNum === sn);
+                    const tierIdx   = Math.floor((sn - 1) / MAX_PER_TIER);
+                    const tier      = TIERS[tierIdx];
+                    const val       = slotTicketInputs[sn] ?? "";
+                    const isValid   = val !== "" && !isNaN(parseInt(val, 10));
+                    const customName = slotNames[String(sn)] ?? "";
+
+                    return (
+                      <div key={sn} className={cn("border rounded-2xl overflow-hidden shadow-sm", tier?.border ?? "border-border")}>
+                        {/* Card header */}
+                        <div className={cn("px-4 py-3 flex items-center gap-3", tier?.headerBg ?? "bg-muted/40")}>
+                          <div style={FOLD} className={cn(
+                            "size-10 rounded-xl border flex items-center justify-center font-black text-sm shrink-0",
+                            tier ? cn(tier.bg, tier.color, tier.border) : "bg-muted text-muted-foreground"
+                          )}>
+                            {tier?.label ?? `#${sn}`}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold">
+                              Slot #{sn}{customName ? <span className="text-muted-foreground font-normal"> · {customName}</span> : ""}
+                            </p>
+                            {slot?.gameName && (
+                              <p className="text-xs text-muted-foreground truncate">{slot.gameName}{slot.pack ? ` · Pack ${slot.pack}` : ""}</p>
+                            )}
+                          </div>
+                          {isValid && <CheckCircle className="size-5 text-emerald-500 shrink-0" />}
+                        </div>
+
+                        {/* Input */}
+                        <div className="px-4 py-3 space-y-2 bg-background">
+                          <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                            Starting Ticket #
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder={slot?.ticketStart != null ? String(slot.ticketStart) : "e.g. 025"}
+                            value={val}
+                            onChange={e => {
+                              setSlotTicketInputs(prev => ({ ...prev, [sn]: e.target.value }));
+                              setClockInError("");
+                            }}
+                            className="w-full border rounded-xl px-4 py-3 text-base bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition font-mono font-bold"
+                          />
+                          {slot?.ticketStart != null && (
+                            <p className="text-xs text-muted-foreground">
+                              Expected: <span className="font-mono font-semibold text-foreground">#{slot.ticketStart}</span>
+                              {" "}— must match the first unsold ticket in your book
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={() => {
+                    const allFilled = selectedSlots.every(sn => slotTicketInputs[sn]?.trim());
+                    if (!allFilled) {
+                      setClockInError("Please enter starting ticket numbers for all selected slots.");
+                      return;
+                    }
+                    setClockInError("");
+                    setClockStep("preview");
+                  }}
+                  className="w-full flex items-center justify-center gap-2 bg-primary/10 text-primary border border-primary/20 py-3.5 rounded-2xl font-semibold text-sm hover:bg-primary/20 transition-colors"
+                >
+                  <Eye className="size-4" /> Review & Confirm
+                </button>
+              </div>
+            )}
+
+            {/* ── PREVIEW ── */}
+            {clockStep === "preview" && (
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => { setClockStep("slot_tickets"); setClockInError(""); }}
+                      className="text-xs text-muted-foreground hover:text-foreground">← Edit</button>
+                    <div className="flex-1">
+                      <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={2} />
+                    </div>
+                  </div>
+                  <p className="text-base font-bold">Review & Start Shift</p>
+                </div>
+
+                {clockInError && (
+                  <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/8 border border-destructive/15 rounded-xl px-4 py-3">
+                    <AlertTriangle className="size-4 shrink-0 mt-0.5" />{clockInError}
+                  </div>
+                )}
+
+                <div className="border rounded-2xl overflow-hidden shadow-sm">
+                  <div className="bg-muted px-4 py-2.5">
+                    <div className="grid grid-cols-4 text-xs font-semibold text-muted-foreground">
+                      <span>Slot</span><span>Game</span><span>Start #</span><span className="text-right">Tier</span>
+                    </div>
+                  </div>
+                  <div className="divide-y">
+                    {[...selectedSlots].sort((a, b) => a - b).map(sn => {
+                      const slot    = slots.find(s => s.slotNum === sn);
+                      const tierIdx = Math.floor((sn - 1) / MAX_PER_TIER);
+                      const tier    = TIERS[tierIdx];
+                      return (
+                        <div key={sn} className="grid grid-cols-4 px-4 py-3 text-sm items-center hover:bg-muted/20 transition-colors">
+                          <span className="font-bold">#{sn}</span>
+                          <span className="text-xs truncate pr-1">{slot?.gameName ?? "—"}</span>
+                          <span className="font-mono font-bold">#{slotTicketInputs[sn]}</span>
+                          <span className={cn("text-right font-bold", tier?.color ?? "text-muted-foreground")}>
+                            {tier?.label ?? "—"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button onClick={() => setClockStep("slot_tickets")}
+                    className="flex-1 flex items-center justify-center gap-2 border rounded-2xl py-3 text-sm font-medium hover:bg-accent transition-colors">
+                    <RotateCcw className="size-4" /> Edit
+                  </button>
+                  <button onClick={handleClockIn} disabled={submitting || selectedSlots.length === 0}
+                    className="flex-1 flex items-center justify-center gap-2 bg-primary text-primary-foreground rounded-2xl py-3 text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50 shadow-sm">
+                    {submitting
+                      ? <span className="size-4 rounded-full border-2 border-primary-foreground border-t-transparent animate-spin" />
+                      : <><Clock className="size-4" /> Start Shift</>
+                    }
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── ACTIVE SHIFT ── */}
+            {clockStep === "active" && active && (
+              <div className="space-y-4">
+                {/* Active shift header card */}
+                <div className="border-2 border-emerald-300/50 rounded-3xl p-5 bg-emerald-50/40 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="size-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-sm font-semibold text-emerald-800">Shift in progress</span>
+                    </div>
+                    <span className="font-mono text-xl font-black text-emerald-700 tabular-nums">
+                      {fmtDuration(elapsed)}
+                    </span>
+                  </div>
+
+                  {/* Shift start time */}
+                  <p className="text-xs text-emerald-700/70">
+                    Started at {fmtTime(active.clockIn)} · {fmtDate(active.clockIn)}
+                  </p>
+
+                  {/* Active books list */}
+                  <div className="space-y-2">
+                    {(active.shiftBooks?.length
+                      ? active.shiftBooks
+                      : [{ slotNum: active.slotNum, ticketStart: active.ticketStart, bookId: "", serial: "", gameName: active.gameName, price: active.bookPrice }]
+                    ).sort((a, b) => a.slotNum - b.slotNum).map(sb => {
+                      const tierIdx = Math.floor((sb.slotNum - 1) / MAX_PER_TIER);
+                      const tier    = TIERS[tierIdx];
+                      return (
+                        <div key={sb.slotNum} className="bg-white/80 rounded-xl border border-emerald-100 px-3 py-2.5 flex items-center gap-3">
+                          <div className={cn(
+                            "size-8 rounded-lg border flex items-center justify-center text-[10px] font-black shrink-0",
+                            tier ? cn(tier.bg, tier.color, tier.border) : "bg-muted text-muted-foreground"
+                          )}>
+                            {tier?.label ?? "?"}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-bold truncate">{sb.gameName ?? `Slot #${sb.slotNum}`}</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              Slot #{sb.slotNum} · Starts at ticket #{sb.ticketStart}
+                            </p>
+                          </div>
+                          <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-1.5 py-0.5 shrink-0">
+                            Active
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Current slot overview with sold-out controls */}
+                <div className="border rounded-2xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                    <BookOpen className="size-3.5" /> Current Slot Board
+                  </p>
+                  <ActiveSlotGrid
+                    slots={slots}
+                    slotNames={slotNames}
+                    tierCounts={tierCounts}
+                    activeSlots={activeBookSet}
+                    onSoldOut={handleBookSoldOut}
+                  />
+                </div>
+
+                <button
+                  onClick={() => setClockStep("clockout_slots")}
+                  className="w-full flex items-center justify-center gap-2 bg-destructive text-white py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity shadow-sm"
+                >
+                  <ArrowRight className="size-4" /> Clock Out
+                </button>
+              </div>
+            )}
+
+            {/* ── CLOCK OUT: End Tickets per Slot ── */}
+            {clockStep === "clockout_slots" && active && (
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setClockStep("active")}
+                      className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
+                    <div className="flex-1">
+                      <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={0} />
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-base font-bold">Record Ending Tickets</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Enter the last ticket number you sold for each slot.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {shiftBooksForClockout.sort((a, b) => a.slotNum - b.slotNum).map(sb => {
+                    const tierIdx    = Math.floor((sb.slotNum - 1) / MAX_PER_TIER);
+                    const tier       = TIERS[tierIdx];
+                    const val        = slotEndInputs[sb.slotNum] ?? "";
+                    const endNum     = parseInt(val, 10);
+                    const isValid    = val !== "" && !isNaN(endNum) && endNum > sb.ticketStart;
+                    const sold       = isValid ? endNum - sb.ticketStart : null;
+                    const saleAmt    = sold != null && sb.price ? sold * sb.price : null;
+                    const customName = slotNames[String(sb.slotNum)] ?? "";
+                    const hasInputErr = val !== "" && !isValid;
+
+                    return (
+                      <div key={sb.slotNum} className={cn("border rounded-2xl overflow-hidden shadow-sm", tier?.border ?? "border-border")}>
+                        {/* Header */}
+                        <div className={cn("px-4 py-3 flex items-center gap-3", tier?.headerBg ?? "bg-muted/40")}>
+                          <div style={FOLD} className={cn(
+                            "size-10 rounded-xl border flex items-center justify-center font-black text-sm shrink-0",
+                            tier ? cn(tier.bg, tier.color, tier.border) : "bg-muted text-muted-foreground"
+                          )}>
+                            {tier?.label ?? `#${sb.slotNum}`}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold">
+                              Slot #{sb.slotNum}{customName ? <span className="text-muted-foreground font-normal"> · {customName}</span> : ""}
+                            </p>
+                            <p className="text-xs text-muted-foreground truncate">{sb.gameName ?? "—"}</p>
+                          </div>
+                          {isValid && sold != null && (
+                            <div className="text-right shrink-0">
+                              <p className={cn("text-sm font-black", tier?.color)}>{sold}</p>
+                              <p className="text-[9px] text-muted-foreground">tickets</p>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Input area */}
+                        <div className="px-4 py-3 space-y-2.5 bg-background">
+                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                            <span>Started at <span className="font-mono font-semibold text-foreground">#{sb.ticketStart}</span></span>
+                            {sb.price != null && <span className="font-semibold">${sb.price} / ticket</span>}
+                          </div>
+
+                          <div>
+                            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                              Ending Ticket #
+                            </label>
+                            <input
+                              type="number"
+                              min={sb.ticketStart + 1}
+                              placeholder={`Greater than ${sb.ticketStart}`}
+                              value={val}
+                              onChange={e => setSlotEndInputs(prev => ({ ...prev, [sb.slotNum]: e.target.value }))}
+                              className={cn(
+                                "mt-1.5 w-full border rounded-xl px-4 py-3 text-base bg-background focus:outline-none focus:ring-2 transition font-mono font-bold",
+                                hasInputErr
+                                  ? "border-red-300 focus:ring-red-200"
+                                  : isValid
+                                  ? "border-emerald-300 focus:ring-emerald-200"
+                                  : "focus:ring-primary/30"
+                              )}
+                            />
+                          </div>
+
+                          {hasInputErr && (
+                            <p className="text-xs text-red-600">Must be greater than starting ticket #{sb.ticketStart}</p>
+                          )}
+
+                          {isValid && sold != null && (
+                            <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                              <CheckCircle className="size-4 text-emerald-600 shrink-0" />
+                              <div className="text-xs text-emerald-800">
+                                <span className="font-bold">{sold} tickets sold</span>
+                                {saleAmt != null && <span className="text-emerald-700"> · ${saleAmt.toFixed(2)}</span>}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={() => setClockStep("clockout_receipt_sales")}
+                  disabled={!canClockOut}
+                  className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50 shadow-sm"
+                >
+                  Next: Upload Sales Receipt <ArrowRight className="size-4" />
+                </button>
+              </div>
+            )}
+
+            {/* ── CLOCK OUT: Sales Receipt ── */}
+            {clockStep === "clockout_receipt_sales" && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setClockStep("clockout_slots")}
+                    className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
+                  <div className="flex-1">
+                    <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={1} />
+                  </div>
+                </div>
+
+                {salesReceipt ? (
+                  <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold text-emerald-800 flex items-center gap-2">
+                        <CheckCircle className="size-4" /> Sales Receipt Scanned
+                      </p>
+                      <button onClick={() => setSalesReceipt(null)} className="text-muted-foreground hover:text-foreground">
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div><span className="text-muted-foreground">Online Net:</span><span className="font-bold ml-1">${salesReceipt.onlineNetSales.toFixed(2)}</span></div>
+                      <div><span className="text-muted-foreground">Cashless Inst:</span><span className="font-bold ml-1">${salesReceipt.cashlessInstant.toFixed(2)}</span></div>
+                    </div>
+                  </div>
+                ) : (
+                  <ReceiptUploader
+                    type="sales"
+                    onSuccess={d => { setSalesReceipt(d as ReceiptData); }}
+                    onSkip={() => setClockStep("clockout_receipt_cashes")}
+                  />
+                )}
+
+                {salesReceipt && (
+                  <button onClick={() => setClockStep("clockout_receipt_cashes")}
+                    className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity shadow-sm">
+                    Next: Upload Cashes Receipt <ArrowRight className="size-4" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* ── CLOCK OUT: Cashes Receipt ── */}
+            {clockStep === "clockout_receipt_cashes" && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setClockStep("clockout_receipt_sales")}
+                    className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
+                  <div className="flex-1">
+                    <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={2} />
+                  </div>
+                </div>
+
+                {cashesReceipt ? (
+                  <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold text-emerald-800 flex items-center gap-2">
+                        <CheckCircle className="size-4" /> Cashes Receipt Scanned
+                      </p>
+                      <button onClick={() => setCashesReceipt(null)} className="text-muted-foreground hover:text-foreground">
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                    <div className="text-xs">
+                      <span className="text-muted-foreground">Total Cashes:</span>
+                      <span className="font-bold ml-1">${cashesReceipt.totalCashes.toFixed(2)}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <ReceiptUploader
+                    type="cashes"
+                    onSuccess={d => { setCashesReceipt(d as CashesData); }}
+                    onSkip={() => setClockStep("clockout_drawer")}
+                  />
+                )}
+
+                {cashesReceipt && (
+                  <button onClick={() => setClockStep("clockout_drawer")}
+                    className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity shadow-sm">
+                    Next: Cash Drawer <ArrowRight className="size-4" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* ── CLOCK OUT: Cash Drawer ── */}
+            {clockStep === "clockout_drawer" && active && (
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setClockStep("clockout_receipt_cashes")}
+                      className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
+                    <div className="flex-1">
+                      <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={3} />
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-base font-bold">Cash Drawer Amount</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Count the drawer and enter the total before seeing the calculated amount.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold text-lg">$</span>
+                    <input
+                      type="number" min="0" step="0.01" placeholder="0.00"
+                      value={drawerCash}
+                      onChange={e => setDrawerCash(e.target.value)}
+                      className="w-full border-2 rounded-2xl pl-9 pr-4 py-4 text-2xl font-black bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Shift financial summary */}
+                {drawerCash && (
+                  <div className="border rounded-2xl overflow-hidden shadow-sm">
+                    <div className="bg-muted/40 px-4 py-2.5 border-b">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Shift Summary</p>
+                    </div>
+                    <div className="px-4 py-4 space-y-2.5">
+                      {/* Per-slot ticket sales */}
+                      {shiftBooksForClockout.sort((a, b) => a.slotNum - b.slotNum).map(sb => {
+                        const end  = parseInt(slotEndInputs[sb.slotNum] ?? "", 10);
+                        const sold = !isNaN(end) && end > sb.ticketStart ? end - sb.ticketStart : 0;
+                        const amt  = sold * (sb.price ?? 0);
+                        const tierIdx = Math.floor((sb.slotNum - 1) / MAX_PER_TIER);
+                        const tier    = TIERS[tierIdx];
+                        return (
+                          <div key={sb.slotNum} className="flex justify-between text-sm">
+                            <span className="text-muted-foreground flex items-center gap-1.5">
+                              <span className={cn("text-[10px] font-bold", tier?.color)}>Slot #{sb.slotNum}</span>
+                              {sb.price != null && <span className="text-[10px]">{tier?.label} × {sold}</span>}
+                            </span>
+                            <span className="font-mono font-medium">${amt.toFixed(2)}</span>
+                          </div>
+                        );
+                      })}
+
+                      {(salesReceipt || cashesReceipt) && <div className="border-t" />}
+
+                      {salesReceipt && (
+                        <>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Online Net Sales</span>
+                            <span className="font-mono font-medium">${salesReceipt.onlineNetSales.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Cashless Instant</span>
+                            <span className="font-mono font-medium">${salesReceipt.cashlessInstant.toFixed(2)}</span>
+                          </div>
+                        </>
+                      )}
+                      {cashesReceipt && (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Total Cashes</span>
+                          <span className="font-mono font-medium text-red-600">−${cashesReceipt.totalCashes.toFixed(2)}</span>
+                        </div>
+                      )}
+
+                      <div className="border-t pt-2.5 space-y-1.5">
+                        <div className="flex justify-between font-bold text-sm">
+                          <span>Calculated Total</span>
+                          <span className="font-mono">${liveCalc.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between font-bold text-sm">
+                          <span>Drawer Cash</span>
+                          <span className="font-mono">${drawerNum.toFixed(2)}</span>
+                        </div>
+                        {drawerNum > 0 && (
+                          <div className={cn(
+                            "flex justify-between font-black text-base pt-1.5 border-t",
+                            Math.abs(liveDiff) < 0.01
+                              ? "text-emerald-600"
+                              : liveDiff > 0
+                              ? "text-red-600"
+                              : "text-amber-600"
+                          )}>
+                            <span>
+                              {Math.abs(liveDiff) < 0.01 ? "✓ Balanced" : liveDiff > 0 ? "⚠ Over by" : "△ Short by"}
+                            </span>
+                            {Math.abs(liveDiff) >= 0.01 && (
+                              <span className="font-mono">${Math.abs(liveDiff).toFixed(2)}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Discrepancy note — required when amounts don't match */}
+                {needsNote && drawerCash && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-red-700 flex items-center gap-1.5">
+                      <AlertTriangle className="size-4" /> Discrepancy Note Required
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      There is a discrepancy between calculated and drawer amounts. Please explain — this note will be sent to your manager.
+                    </p>
+                    <textarea
+                      rows={3} value={discrepNote}
+                      onChange={e => setDiscrepNote(e.target.value)}
+                      placeholder="Describe what happened during your shift…"
+                      className="w-full border rounded-xl px-3.5 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition resize-none"
+                    />
+                  </div>
+                )}
+
+                <button
+                  onClick={submitClockOut}
+                  disabled={submitting || !drawerCash || (needsNote && !discrepNote.trim())}
+                  className="w-full flex items-center justify-center gap-2 bg-destructive text-white py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-60 shadow-sm"
+                >
+                  {submitting
+                    ? <span className="size-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                    : <><ArrowRight className="size-4" /> Submit &amp; Clock Out</>
+                  }
+                </button>
+              </div>
+            )}
+
+          </>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════
             DASHBOARD TAB
         ══════════════════════════════════════════════════════════════════ */}
         {tab === "dashboard" && (
           <>
-            {/* Stat cards */}
             <div className="grid grid-cols-2 gap-3">
               {[
                 { label: "Tickets Sold",    value: totalSold.toLocaleString(),  icon: Ticket,     color: "text-primary"     },
@@ -1185,13 +1705,12 @@ export default function EmployeeDashboard() {
               ))}
             </div>
 
-            {/* Tickets by price tier */}
             <div className="border rounded-2xl p-5 space-y-3 shadow-sm">
               <p className="text-sm font-semibold">Tickets Sold by Category</p>
-              {PRICE_TIERS.filter((t) => (soldByTier[t] ?? 0) > 0).length === 0 ? (
+              {PRICE_TIERS.filter(t => (soldByTier[t] ?? 0) > 0).length === 0 ? (
                 <p className="text-xs text-muted-foreground py-3 text-center">No completed shifts yet.</p>
               ) : (
-                PRICE_TIERS.map((price) => {
+                PRICE_TIERS.map(price => {
                   const sold = soldByTier[price] ?? 0;
                   if (!sold) return null;
                   const pct = Math.round((sold / maxTierSold) * 100);
@@ -1201,10 +1720,7 @@ export default function EmployeeDashboard() {
                         ${price}
                       </span>
                       <div className="flex-1 bg-muted rounded-full h-5 overflow-hidden">
-                        <div
-                          className={cn("h-full rounded-full transition-all", TIER_COLOR[price])}
-                          style={{ width: `${pct}%` }}
-                        />
+                        <div className={cn("h-full rounded-full transition-all", TIER_COLOR[price])} style={{ width: `${pct}%` }} />
                       </div>
                       <span className="text-xs font-semibold w-12 text-right">{sold.toLocaleString()}</span>
                     </div>
@@ -1213,10 +1729,9 @@ export default function EmployeeDashboard() {
               )}
             </div>
 
-            {/* Shift history */}
             <div className="space-y-2">
               <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-1.5">
-                <Clock className="size-3.5" />Shift History
+                <Clock className="size-3.5" /> Shift History
               </h2>
               <div className="border rounded-2xl divide-y overflow-hidden shadow-sm">
                 {loading ? (
@@ -1232,7 +1747,7 @@ export default function EmployeeDashboard() {
                 ) : completed.length === 0 ? (
                   <p className="text-center py-10 text-sm text-muted-foreground">No completed shifts yet.</p>
                 ) : (
-                  completed.map((s) => {
+                  completed.map(s => {
                     const durationMs = s.clockOut
                       ? new Date(s.clockOut).getTime() - new Date(s.clockIn).getTime() : 0;
                     return (
@@ -1271,526 +1786,6 @@ export default function EmployeeDashboard() {
         )}
 
         {/* ══════════════════════════════════════════════════════════════════
-            SHIFT / CLOCK TAB
-        ══════════════════════════════════════════════════════════════════ */}
-        {tab === "shift" && (
-          <>
-            {/* ── IDLE: big Clock In button ── */}
-            {clockStep === "idle" && (
-              <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center">
-                <div className="size-20 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Clock className="size-10 text-primary" />
-                </div>
-                <div className="space-y-1.5">
-                  <p className="text-lg font-bold">Ready to start your shift?</p>
-                  <p className="text-sm text-muted-foreground">
-                    Hi {user?.name?.split(" ")[0] ?? "there"} — tap below to begin.
-                  </p>
-                </div>
-                <button
-                  onClick={() => setClockStep("start")}
-                  className="w-full max-w-xs flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-base hover:opacity-90 transition-opacity shadow-sm"
-                >
-                  <Clock className="size-5" />Clock In
-                </button>
-              </div>
-            )}
-
-            {/* ── START: show ticket entry prompt + Start button ── */}
-            {clockStep === "start" && (
-              <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center">
-                <div className="size-20 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Ticket className="size-10 text-primary" />
-                </div>
-                <div className="space-y-2">
-                  <p className="text-lg font-bold">Enter your starting ticket</p>
-                  <p className="text-sm text-muted-foreground max-w-xs mx-auto">
-                    Scan or manually enter the serial number of the first ticket in each book you're working with.
-                  </p>
-                </div>
-                <button
-                  onClick={() => { setClockStep("scan_choose"); setScanMode("choose"); }}
-                  className="w-full max-w-xs flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-base hover:opacity-90 transition-opacity shadow-sm"
-                >
-                  <ArrowRight className="size-5" />Start
-                </button>
-                <button onClick={() => setClockStep("idle")}
-                  className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2">
-                  ← Back
-                </button>
-              </div>
-            )}
-
-            {/* ── SCAN CHOOSE + SCANNING ── */}
-            {(clockStep === "scan_choose" || clockStep === "scanning") && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <button onClick={() => { setClockStep("start"); setScanned([]); setScanError(""); }}
-                    className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                  <p className="text-sm font-semibold flex-1">Scan Starting Tickets</p>
-                  {scanned.length > 0 && (
-                    <span className="text-xs bg-primary/10 text-primary font-semibold px-2 py-0.5 rounded-full">
-                      {scanned.length} scanned
-                    </span>
-                  )}
-                </div>
-
-                {/* Verifying spinner */}
-                {verifying && (
-                  <div className="flex items-center gap-3 px-4 py-3 bg-primary/5 border border-primary/20 rounded-xl text-sm text-primary font-medium">
-                    <RefreshCw className="size-4 animate-spin shrink-0" />
-                    Checking with manager&apos;s allocation…
-                  </div>
-                )}
-
-                {!verifying && scanError && (
-                  <div className={cn(
-                    "flex items-start gap-2 text-sm rounded-xl px-4 py-3 border",
-                    scanError.startsWith("⚠")
-                      ? "text-amber-800 bg-amber-50 border-amber-200"
-                      : "text-destructive bg-destructive/8 border-destructive/15"
-                  )}>
-                    <AlertTriangle className="size-4 shrink-0 mt-0.5" />
-                    {scanError.replace(/^⚠\s*/, "")}
-                  </div>
-                )}
-
-                {/* Scan mode chooser */}
-                {!verifying && scanMode === "choose" && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <button onClick={() => { setScanMode("camera"); setClockStep("scanning"); }}
-                      className="flex flex-col items-center gap-3 border-2 rounded-2xl p-5 hover:border-primary hover:bg-primary/5 transition-all group">
-                      <div className="size-12 rounded-2xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                        <Camera className="size-6 text-primary" />
-                      </div>
-                      <div className="text-center">
-                        <p className="text-sm font-semibold">Scan Barcode</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">Live camera</p>
-                      </div>
-                    </button>
-                    <button onClick={() => { setScanMode("manual"); setClockStep("scanning"); }}
-                      className="flex flex-col items-center gap-3 border-2 rounded-2xl p-5 hover:border-primary hover:bg-primary/5 transition-all group">
-                      <div className="size-12 rounded-2xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                        <Keyboard className="size-6 text-primary" />
-                      </div>
-                      <div className="text-center">
-                        <p className="text-sm font-semibold">Enter Manually</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">Type the number</p>
-                      </div>
-                    </button>
-                  </div>
-                )}
-
-                {!verifying && scanMode === "camera" && (
-                  <div className="space-y-3">
-                    <LiveCameraScanner onDetect={(s) => { addScannedEntry(s); }} />
-                    <button onClick={() => setScanMode("manual")}
-                      className="w-full text-sm text-muted-foreground hover:text-foreground underline underline-offset-2">
-                      Enter manually instead
-                    </button>
-                  </div>
-                )}
-
-                {!verifying && scanMode === "manual" && (
-                  <div className="space-y-3">
-                    <input type="text" placeholder="1008-0160737-025-9" value={manualVal}
-                      onChange={(e) => { setManualVal(e.target.value); setManualErr(""); setScanError(""); }}
-                      className="w-full border rounded-xl px-4 py-3 text-sm font-mono bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition" />
-                    <p className="text-xs text-muted-foreground">Format: GGGG-BBBBBBB-TTT-C</p>
-                    {manualErr && <p className="text-xs text-destructive">{manualErr}</p>}
-                    <div className="flex gap-2">
-                      <button onClick={() => { setScanMode("choose"); setScanError(""); }}
-                        className="flex-1 border rounded-xl py-2.5 text-sm font-medium hover:bg-accent transition-colors">
-                        Back
-                      </button>
-                      <button
-                        onClick={() => {
-                          const s = parseScannedSerial(manualVal);
-                          if (!s) { setManualErr("Check format: GGGG-BBBBBBB-TTT-C"); return; }
-                          addScannedEntry(s);
-                        }}
-                        disabled={!manualVal}
-                        className="flex-1 bg-primary text-primary-foreground rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50">
-                        Verify &amp; Add
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Scan mode indicator */}
-                {scanned.length >= 2 && detectedScanMode && (
-                  <div className={cn(
-                    "inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border",
-                    detectedScanMode === "sequential"
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                      : "bg-blue-50 text-blue-700 border-blue-200"
-                  )}>
-                    <span className={cn("size-1.5 rounded-full",
-                      detectedScanMode === "sequential" ? "bg-emerald-500" : "bg-blue-500"
-                    )} />
-                    {detectedScanMode === "sequential" ? "Sequential mode detected" : "Random mode detected"}
-                  </div>
-                )}
-
-                {/* Slot grid — shows manager's allocations with scan match status */}
-                <div className="space-y-1.5">
-                  <p className="text-xs font-semibold text-muted-foreground">Manager&apos;s Slot Allocation</p>
-                  <EmployeeSlotGrid
-                    slots={slots}
-                    slotNames={slotNames}
-                    tierCounts={tierCounts}
-                    scanned={scanned}
-                  />
-                </div>
-
-                {/* Verified scanned list */}
-                {scanned.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-muted-foreground">
-                      Verified tickets ({scanned.length})
-                    </p>
-                    {scanned.map((s, i) => (
-                      <div key={i} className={cn(
-                        "flex items-center justify-between px-3 py-2.5 border rounded-xl",
-                        s.slotNum ? "bg-emerald-50/50 border-emerald-200/60" : "bg-amber-50/50 border-amber-200/60"
-                      )}>
-                        <div className="flex items-start gap-2.5 min-w-0">
-                          {s.slotNum
-                            ? <CheckCircle className="size-4 text-emerald-600 shrink-0 mt-0.5" />
-                            : <AlertTriangle className="size-4 text-amber-500 shrink-0 mt-0.5" />
-                          }
-                          <div className="min-w-0">
-                            <p className="font-mono text-sm font-bold">{s.serial}</p>
-                            <p className="text-xs text-muted-foreground">
-                              Ticket #{s.ticketStart}
-                              {s.slotNum
-                                ? <span className="text-emerald-700 font-medium"> · Slot #{s.slotNum} ✓</span>
-                                : <span className="text-amber-600"> · No slot (auto-assign at start)</span>
-                              }
-                              {s.gameName ? ` · ${s.gameName}` : ""}
-                              {s.price ? ` · $${s.price}` : ""}
-                            </p>
-                          </div>
-                        </div>
-                        <button onClick={() => { setScanned((prev) => prev.filter((_, idx) => idx !== i)); setScanError(""); }}
-                          className="text-muted-foreground hover:text-destructive p-1 shrink-0">
-                          <X className="size-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {scanned.length > 0 && !verifying && (
-                  <button onClick={() => { setClockStep("preview"); setScanError(""); }}
-                    className="w-full flex items-center justify-center gap-2 bg-primary/10 text-primary border border-primary/20 py-3 rounded-2xl text-sm font-semibold hover:bg-primary/20 transition-colors">
-                    <Eye className="size-4" />I&apos;m Done — Preview ({scanned.length} book{scanned.length > 1 ? "s" : ""})
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* ── PREVIEW ── */}
-            {clockStep === "preview" && (
-              <div className="space-y-5">
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setClockStep("scan_choose")} className="text-xs text-muted-foreground hover:text-foreground">← Edit</button>
-                  <p className="text-sm font-semibold flex-1">Preview & Confirm</p>
-                </div>
-
-                {scanError && (
-                  <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/8 border border-destructive/15 rounded-xl px-4 py-3">
-                    <AlertTriangle className="size-4 shrink-0 mt-0.5" />{scanError}
-                  </div>
-                )}
-
-                <div className="border rounded-2xl divide-y overflow-hidden">
-                  <div className="grid grid-cols-4 bg-muted px-4 py-2 text-xs font-semibold text-muted-foreground">
-                    <span>Slot</span><span>Book</span><span>Ticket</span><span className="text-right">Price</span>
-                  </div>
-                  {scanned.map((s, i) => (
-                    <div key={i} className="grid grid-cols-4 px-4 py-3 text-sm items-center">
-                      <span className="font-bold">{s.slotNum || "Auto"}</span>
-                      <span className="font-mono text-xs truncate">{s.serial.split("-")[1]}</span>
-                      <span className="font-mono">#{s.ticketStart}</span>
-                      <span className="text-right text-muted-foreground">{s.price ? `$${s.price}` : "—"}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex gap-3">
-                  <button onClick={() => { setClockStep("scan_choose"); setScanMode("choose"); }}
-                    className="flex-1 flex items-center justify-center gap-2 border rounded-2xl py-3 text-sm font-medium hover:bg-accent transition-colors">
-                    <RotateCcw className="size-4" />Rescan
-                  </button>
-                  <button onClick={handleClockIn} disabled={submitting || scanned.length === 0}
-                    className="flex-1 flex items-center justify-center gap-2 bg-primary text-primary-foreground rounded-2xl py-3 text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50 shadow-sm">
-                    {submitting
-                      ? <span className="size-4 rounded-full border-2 border-primary-foreground border-t-transparent animate-spin" />
-                      : <><Clock className="size-4" />Save & Start Shift</>
-                    }
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* ── ACTIVE SHIFT ── */}
-            {clockStep === "active" && active && (
-              <div className="space-y-4">
-                {/* Active shift card */}
-                <div className="border-2 border-emerald-300/50 rounded-3xl p-5 bg-emerald-50/40 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="size-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                      <span className="text-sm font-semibold text-emerald-800">Shift in progress</span>
-                    </div>
-                    <span className="font-mono text-xl font-black text-emerald-700 tabular-nums">
-                      {fmtDuration(elapsed)}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3 text-center">
-                    {[
-                      { label: "Slot",  value: `#${active.slotNum}`     },
-                      { label: "Start", value: `#${active.ticketStart}` },
-                      { label: "Since", value: fmtTime(active.clockIn)  },
-                    ].map(({ label, value }) => (
-                      <div key={label} className="bg-white/80 rounded-xl py-2.5 px-2 border border-emerald-100">
-                        <p className="text-sm font-bold">{value}</p>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">{label}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Mid-shift slot grid with sold-out controls */}
-                <div className="border rounded-2xl p-4 space-y-3">
-                  <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-                    <BookOpen className="size-3.5" />Current Slot Overview
-                  </p>
-                  <EmployeeSlotGrid
-                    slots={slots}
-                    slotNames={slotNames}
-                    tierCounts={tierCounts}
-                    scanned={[]}
-                    onSoldOut={handleBookSoldOut}
-                  />
-                </div>
-
-                {/* Clock out button */}
-                <button
-                  onClick={() => setClockStep("clockout_scan")}
-                  className="w-full flex items-center justify-center gap-2 bg-destructive text-white py-3.5 rounded-2xl font-semibold text-sm hover:opacity-90 transition-opacity shadow-sm">
-                  <ArrowRight className="size-4" />Clock Out
-                </button>
-              </div>
-            )}
-
-            {/* ── CLOCK OUT: End Ticket Scan ── */}
-            {clockStep === "clockout_scan" && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setClockStep("active")} className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                  <p className="text-sm font-semibold">Enter Ending Ticket</p>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Ending Ticket Number</label>
-                  <div className="flex gap-2">
-                    <input type="number" required min={active?.ticketStart ?? 0}
-                      placeholder="e.g. 057" value={endTicket}
-                      onChange={(e) => setEndTicket(e.target.value)}
-                      className="flex-1 border rounded-xl px-3.5 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition" />
-                    <button type="button" onClick={() => { setScanMode("camera"); }}
-                      className="px-3.5 py-2.5 border rounded-xl hover:bg-muted transition-colors">
-                      <Camera className="size-4 text-muted-foreground" />
-                    </button>
-                  </div>
-                  {endTicket && active && Number(endTicket) > active.ticketStart && (
-                    <p className="text-sm font-bold text-emerald-600">
-                      {Number(endTicket) - active.ticketStart} tickets will be recorded as sold.
-                    </p>
-                  )}
-                  {endTicket && active && Number(endTicket) <= active.ticketStart && (
-                    <p className="text-xs text-amber-600">Must be greater than start #{active.ticketStart}.</p>
-                  )}
-                </div>
-
-                {/* Mid-shift sold-out marks */}
-                {slots.filter((s) => s.bookId).length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-muted-foreground">Mark any books sold out during shift</p>
-                    {slots.filter((s) => s.bookId).map((sl) => (
-                      <div key={sl.slotNum} className="flex items-center justify-between px-3 py-2.5 border rounded-xl text-sm">
-                        <span>Slot #{sl.slotNum} · <span className="font-mono text-xs text-muted-foreground">{sl.pack ?? sl.bookId?.slice(0, 8)}</span></span>
-                        <button onClick={() => handleBookSoldOut(sl.slotNum, sl.bookId!)}
-                          className="text-xs px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors font-medium">
-                          Sold Out
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <button onClick={() => setClockStep("clockout_receipt_sales")} disabled={!canClockOut}
-                  className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-3.5 rounded-2xl font-semibold text-sm hover:opacity-90 transition-opacity disabled:opacity-50 shadow-sm">
-                  Next: Upload Sales Receipt <ArrowRight className="size-4" />
-                </button>
-              </div>
-            )}
-
-            {/* ── CLOCK OUT: Sales Today Receipt ── */}
-            {clockStep === "clockout_receipt_sales" && (
-              <div className="space-y-4">
-                <button onClick={() => setClockStep("clockout_scan")} className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                {salesReceipt ? (
-                  <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-semibold text-emerald-800 flex items-center gap-2">
-                        <CheckCircle className="size-4" />Sales Receipt Scanned
-                      </p>
-                      <button onClick={() => setSalesReceipt(null)} className="text-muted-foreground hover:text-foreground">
-                        <X className="size-4" />
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div><span className="text-muted-foreground">Online Net:</span><span className="font-bold ml-1">${salesReceipt.onlineNetSales.toFixed(2)}</span></div>
-                      <div><span className="text-muted-foreground">Cashless Inst:</span><span className="font-bold ml-1">${salesReceipt.cashlessInstant.toFixed(2)}</span></div>
-                    </div>
-                  </div>
-                ) : (
-                  <ReceiptUploader
-                    type="sales"
-                    onSuccess={(d) => { setSalesReceipt(d as ReceiptData); }}
-                    onSkip={() => setClockStep("clockout_receipt_cashes")}
-                  />
-                )}
-                {salesReceipt && (
-                  <button onClick={() => setClockStep("clockout_receipt_cashes")}
-                    className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-3.5 rounded-2xl font-semibold text-sm hover:opacity-90 transition-opacity shadow-sm">
-                    Next: Upload Cashes Receipt <ArrowRight className="size-4" />
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* ── CLOCK OUT: Cashes Today Receipt ── */}
-            {clockStep === "clockout_receipt_cashes" && (
-              <div className="space-y-4">
-                <button onClick={() => setClockStep("clockout_receipt_sales")} className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                {cashesReceipt ? (
-                  <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-semibold text-emerald-800 flex items-center gap-2">
-                        <CheckCircle className="size-4" />Cashes Receipt Scanned
-                      </p>
-                      <button onClick={() => setCashesReceipt(null)} className="text-muted-foreground hover:text-foreground">
-                        <X className="size-4" />
-                      </button>
-                    </div>
-                    <div className="text-xs">
-                      <span className="text-muted-foreground">Total Cashes:</span>
-                      <span className="font-bold ml-1">${cashesReceipt.totalCashes.toFixed(2)}</span>
-                    </div>
-                  </div>
-                ) : (
-                  <ReceiptUploader
-                    type="cashes"
-                    onSuccess={(d) => { setCashesReceipt(d as CashesData); }}
-                    onSkip={() => setClockStep("clockout_drawer")}
-                  />
-                )}
-                {cashesReceipt && (
-                  <button onClick={() => setClockStep("clockout_drawer")}
-                    className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-3.5 rounded-2xl font-semibold text-sm hover:opacity-90 transition-opacity shadow-sm">
-                    Next: Cash Drawer <ArrowRight className="size-4" />
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* ── CLOCK OUT: Cash Drawer Entry ── */}
-            {clockStep === "clockout_drawer" && active && (
-              <div className="space-y-5">
-                <button onClick={() => setClockStep("clockout_receipt_cashes")} className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-
-                <div className="space-y-1.5">
-                  <p className="text-sm font-semibold">Cash Drawer Amount</p>
-                  <p className="text-xs text-muted-foreground">Count and enter the total cash in the drawer before seeing the calculated amount.</p>
-                  <div className="relative">
-                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold">$</span>
-                    <input
-                      type="number" min="0" step="0.01" placeholder="0.00"
-                      value={drawerCash}
-                      onChange={(e) => setDrawerCash(e.target.value)}
-                      className="w-full border rounded-xl pl-7 pr-4 py-3 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition font-mono text-lg"
-                    />
-                  </div>
-                </div>
-
-                {drawerCash && (
-                  <div className="p-4 border rounded-2xl space-y-3 bg-muted/30">
-                    <p className="text-xs font-semibold text-muted-foreground">Shift Summary</p>
-                    <div className="space-y-1.5 text-sm">
-                      {[
-                        { label: "Ticket Sales", value: `$${(Math.max(0, Number(endTicket) - (active.ticketStart)) * (active.bookPrice ?? 0)).toFixed(2)}` },
-                        { label: "Online Net",   value: `$${(salesReceipt?.onlineNetSales ?? 0).toFixed(2)}` },
-                        { label: "Cashless Inst",value: `$${(salesReceipt?.cashlessInstant ?? 0).toFixed(2)}` },
-                        { label: "Total Cashes", value: `−$${(cashesReceipt?.totalCashes ?? 0).toFixed(2)}` },
-                      ].map(({ label, value }) => (
-                        <div key={label} className="flex justify-between">
-                          <span className="text-muted-foreground">{label}</span>
-                          <span className="font-mono font-medium">{value}</span>
-                        </div>
-                      ))}
-                      <div className="border-t pt-2 flex justify-between font-bold">
-                        <span>Calculated Total</span>
-                        <span className="font-mono">${liveCalc.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between font-bold">
-                        <span>Drawer Cash</span>
-                        <span className="font-mono">${drawerNum.toFixed(2)}</span>
-                      </div>
-                      {drawerNum > 0 && (
-                        <div className={cn("flex justify-between font-bold text-base pt-1 border-t",
-                          Math.abs(liveDiff) < 0.01 ? "text-emerald-600" : liveDiff > 0 ? "text-red-600" : "text-amber-600")}>
-                          <span>{Math.abs(liveDiff) < 0.01 ? "✓ Balanced" : liveDiff > 0 ? "⚠ Over by" : "△ Short by"}</span>
-                          {Math.abs(liveDiff) >= 0.01 && <span className="font-mono">${Math.abs(liveDiff).toFixed(2)}</span>}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {needsNote && drawerCash && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-semibold text-red-700">
-                      Discrepancy Note (required)
-                    </label>
-                    <p className="text-xs text-muted-foreground">Please explain the discrepancy. This note will be sent to the manager.</p>
-                    <textarea
-                      rows={3} value={discrepNote}
-                      onChange={(e) => setDiscrepNote(e.target.value)}
-                      placeholder="Describe what happened during your shift..."
-                      className="w-full border rounded-xl px-3.5 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition resize-none"
-                    />
-                  </div>
-                )}
-
-                <button
-                  onClick={submitClockOut}
-                  disabled={submitting || !drawerCash || (needsNote && !discrepNote.trim())}
-                  className="w-full flex items-center justify-center gap-2 bg-destructive text-white py-3.5 rounded-2xl font-semibold text-sm hover:opacity-90 transition-opacity disabled:opacity-60 shadow-sm">
-                  {submitting
-                    ? <span className="size-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
-                    : <><ArrowRight className="size-4" />Clock Out & Submit</>
-                  }
-                </button>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* ══════════════════════════════════════════════════════════════════
             ALERTS TAB
         ══════════════════════════════════════════════════════════════════ */}
         {tab === "alerts" && (
@@ -1805,7 +1800,8 @@ export default function EmployeeDashboard() {
                     setAlerts([]);
                     setUnreadAlerts(0);
                   }}
-                  className="text-xs text-muted-foreground hover:text-destructive transition-colors">
+                  className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+                >
                   Clear all
                 </button>
               )}
@@ -1820,16 +1816,13 @@ export default function EmployeeDashboard() {
               </div>
             ) : (
               <div className="space-y-2">
-                {alerts.map((a) => (
-                  <div
-                    key={a.id}
-                    className={cn(
-                      "flex items-start gap-3 px-4 py-3 rounded-xl border text-sm",
-                      a.severity === "error"   && "bg-red-50 border-red-200 text-red-800",
-                      a.severity === "warning" && "bg-amber-50 border-amber-200 text-amber-800",
-                      a.severity === "info"    && "bg-blue-50 border-blue-200 text-blue-800",
-                    )}
-                  >
+                {alerts.map(a => (
+                  <div key={a.id} className={cn(
+                    "flex items-start gap-3 px-4 py-3 rounded-xl border text-sm",
+                    a.severity === "error"   && "bg-red-50 border-red-200 text-red-800",
+                    a.severity === "warning" && "bg-amber-50 border-amber-200 text-amber-800",
+                    a.severity === "info"    && "bg-blue-50 border-blue-200 text-blue-800",
+                  )}>
                     <AlertTriangle className={cn(
                       "size-4 shrink-0 mt-0.5",
                       a.severity === "error"   && "text-red-500",
@@ -1842,11 +1835,12 @@ export default function EmployeeDashboard() {
                     </div>
                     <button
                       onClick={() => {
-                        const next = alerts.filter((x) => x.id !== a.id);
+                        const next = alerts.filter(x => x.id !== a.id);
                         setAlerts(next);
                         if (user?.id) saveAlerts(user.id, next);
                       }}
-                      className="shrink-0 opacity-40 hover:opacity-80 transition-opacity">
+                      className="shrink-0 opacity-40 hover:opacity-80 transition-opacity"
+                    >
                       <X className="size-3.5" />
                     </button>
                   </div>
