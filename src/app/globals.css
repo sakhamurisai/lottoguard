@@ -1,268 +1,315 @@
-/**
- * LottoGuard Design System — Colors & Typography
- * Source: sakhamurisai/lottoguard globals.css (Tailwind v4 / ShadCN)
- *
- * Font note: Geist Sans & Geist Mono are Vercel's fonts.
- * Load via: https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;700&display=swap
- * ⚠ Substitution flag: If Geist is unavailable, fallback to "DM Sans" (Google Fonts).
- */
-
-/* ─── Google Font Import ─────────────────────────────────────────────────── */
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800;0,9..40,900;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
 
-/* ─── Base Color Tokens (Light Mode) ─────────────────────────────────────── */
-:root {
-  /* Backgrounds */
-  --lg-background:          oklch(1 0 0);           /* #ffffff — page bg */
-  --lg-card:                oklch(1 0 0);           /* #ffffff — card bg */
-  --lg-popover:             oklch(1 0 0);           /* #ffffff — popover bg */
-  --lg-sidebar:             oklch(0.978 0.004 264.4); /* slightly blue-tinted white */
-  --lg-muted:               oklch(0.97 0 0);        /* light gray — muted bg */
+/* ─── Design System Configuration ───────────────────────────────────────── */
+@theme {
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, monospace;
 
-  /* Foregrounds */
-  --lg-foreground:          oklch(0.145 0 0);       /* near-black text */
-  --lg-card-foreground:     oklch(0.145 0 0);
-  --lg-muted-foreground:    oklch(0.556 0 0);       /* gray — secondary text */
-  --lg-accent-foreground:   oklch(0.205 0 0);
+  --color-background: oklch(1 0 0);
+  --color-foreground: oklch(0.145 0 0);
+  --color-card: oklch(1 0 0);
+  --color-card-foreground: oklch(0.145 0 0);
+  --color-popover: oklch(1 0 0);
+  --color-popover-foreground: oklch(0.145 0 0);
 
-  /* Brand / Primary — indigo-blue */
-  --lg-primary:             oklch(0.50 0.260 264.4);  /* main brand blue */
-  --lg-primary-foreground:  oklch(0.98 0.010 254.6);  /* near-white on primary */
-  --lg-primary-subtle:      color-mix(in oklch, oklch(0.50 0.260 264.4) 10%, white); /* ~10% primary tint */
+  --color-primary: oklch(0.50 0.260 264.4);
+  --color-primary-foreground: oklch(0.98 0.010 254.6);
+  --color-primary-subtle: color-mix(in oklch, oklch(0.50 0.260 264.4) 10%, white);
 
-  /* Secondary */
-  --lg-secondary:           oklch(0.967 0.001 286.375);
-  --lg-secondary-foreground: oklch(0.21 0.006 285.885);
+  --color-secondary: oklch(0.967 0.001 286.375);
+  --color-secondary-foreground: oklch(0.21 0.006 285.885);
 
-  /* Semantic */
-  --lg-destructive:         oklch(0.577 0.245 27.325); /* red */
-  --lg-destructive-subtle:  color-mix(in oklch, oklch(0.577 0.245 27.325) 8%, white);
+  --color-muted: oklch(0.97 0 0);
+  --color-muted-foreground: oklch(0.556 0 0);
 
-  /* Borders & Inputs */
-  --lg-border:              oklch(0.922 0 0);       /* light gray border */
-  --lg-input:               oklch(0.922 0 0);
-  --lg-ring:                oklch(0.708 0 0);
+  --color-accent: oklch(0.967 0.001 286.375);
+  --color-accent-foreground: oklch(0.205 0 0);
 
-  /* Chart / Tier palette (lottery ticket price tiers) */
-  --lg-tier-1:              oklch(0.6 0.17 145);    /* $1  — green */
-  --lg-tier-2:              oklch(0.6 0.14 178);    /* $2  — teal */
-  --lg-tier-5:              oklch(0.55 0.20 240);   /* $5  — blue */
-  --lg-tier-10:             oklch(0.52 0.22 275);   /* $10 — violet */
-  --lg-tier-20:             oklch(0.50 0.22 300);   /* $20 — purple */
-  --lg-tier-30:             oklch(0.55 0.22 335);   /* $30 — pink */
-  --lg-tier-50:             oklch(0.55 0.22 15);    /* $50 — rose */
+  --color-destructive: oklch(0.577 0.245 27.325);
+  --color-destructive-foreground: oklch(0.98 0.03 27);
+  --color-destructive-subtle: color-mix(in oklch, oklch(0.577 0.245 27.325) 8%, white);
 
-  /* Status colors */
-  --lg-success:             oklch(0.6 0.17 145);    /* emerald */
-  --lg-success-bg:          oklch(0.97 0.04 145);
-  --lg-warning:             oklch(0.7 0.18 75);     /* amber */
-  --lg-warning-bg:          oklch(0.98 0.04 80);
-  --lg-error:               oklch(0.577 0.245 27);  /* red */
-  --lg-error-bg:            oklch(0.98 0.03 27);
+  --color-border: oklch(0.922 0 0);
+  --color-input: oklch(0.922 0 0);
+  --color-ring: oklch(0.708 0 0);
 
-  /* Analytics chart (teal scale — used for data viz) */
-  --lg-chart-1:             oklch(0.855 0.138 181.071);
-  --lg-chart-2:             oklch(0.704 0.14 182.503);
-  --lg-chart-3:             oklch(0.6 0.118 184.704);
-  --lg-chart-4:             oklch(0.511 0.096 186.391);
-  --lg-chart-5:             oklch(0.437 0.078 188.216);
+  --color-sidebar: oklch(0.978 0.004 264.4);
+  --color-sidebar-foreground: oklch(0.145 0 0);
+
+  --color-success: oklch(0.6 0.17 145);
+  --color-success-bg: oklch(0.97 0.04 145);
+  --color-warning: oklch(0.7 0.18 75);
+  --color-warning-bg: oklch(0.98 0.04 80);
+  --color-error: oklch(0.577 0.245 27);
+  --color-error-bg: oklch(0.98 0.03 27);
+
+  --color-tier-1: oklch(0.6 0.17 145);
+  --color-tier-2: oklch(0.6 0.14 178);
+  --color-tier-5: oklch(0.55 0.20 240);
+  --color-tier-10: oklch(0.52 0.22 275);
+  --color-tier-20: oklch(0.50 0.22 300);
+  --color-tier-30: oklch(0.55 0.22 335);
+  --color-tier-50: oklch(0.55 0.22 15);
+
+  --color-chart-1: oklch(0.855 0.138 181.071);
+  --color-chart-2: oklch(0.704 0.14 182.503);
+  --color-chart-3: oklch(0.6 0.118 184.704);
+  --color-chart-4: oklch(0.511 0.096 186.391);
+  --color-chart-5: oklch(0.437 0.078 188.216);
+
+  --radius-base: 0.625rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1.125rem;
+  --radius-3xl: 1.375rem;
+  --radius-4xl: 1.625rem;
+  --radius-full: 9999px;
+
+  --spacing-sidebar: 240px;
+  --container-content: 1200px;
+
+  --shadow-sm: 0 1px 2px 0 oklch(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px oklch(0 0 0 / 0.07), 0 2px 4px -2px oklch(0 0 0 / 0.05);
+  --shadow-lg: 0 10px 15px -3px oklch(0 0 0 / 0.07), 0 4px 6px -4px oklch(0 0 0 / 0.05);
+  --shadow-xl: 0 20px 25px -5px oklch(0 0 0 / 0.08), 0 8px 10px -6px oklch(0 0 0 / 0.05);
+  --shadow-2xl: 0 25px 50px -12px oklch(0 0 0 / 0.20);
+
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 150ms;
+  --duration-base: 300ms;
+  --duration-slow: 600ms;
+
+  --text-display: clamp(2.5rem, 5vw, 4rem);
+  --text-display--line-height: 1.05;
+  --text-display--font-weight: 900;
+  --text-display--letter-spacing: -0.035em;
+
+  --text-h1: 1.25rem;
+  --text-h1--line-height: 1.4;
+  --text-h1--font-weight: 600;
+  --text-h1--letter-spacing: -0.015em;
+
+  --text-h2: 1rem;
+  --text-h2--line-height: 1.4;
+  --text-h2--font-weight: 600;
+
+  --text-h3: 0.875rem;
+  --text-h3--line-height: 1.5;
+  --text-h3--font-weight: 600;
+
+  --text-stat: 2.25rem;
+  --text-stat--line-height: 1;
+  --text-stat--font-weight: 900;
+  --text-stat--letter-spacing: -0.025em;
+
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.65;
+  --text-body--font-weight: 400;
+
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.5;
+  --text-caption--font-weight: 400;
+
+  --text-label: 0.625rem;
+  --text-label--line-height: 1;
+  --text-label--font-weight: 700;
+  --text-label--letter-spacing: 0.1em;
+  --text-label--text-transform: uppercase;
 }
 
-/* ─── Dark Mode Tokens ───────────────────────────────────────────────────── */
+/* ─── Dark Mode ─────────────────────────────────────────────────────────── */
 .dark {
-  --lg-background:          oklch(0.145 0 0);
-  --lg-card:                oklch(0.205 0 0);
-  --lg-popover:             oklch(0.205 0 0);
-  --lg-sidebar:             oklch(0.205 0 0);
-  --lg-muted:               oklch(0.269 0 0);
-
-  --lg-foreground:          oklch(0.985 0 0);
-  --lg-card-foreground:     oklch(0.985 0 0);
-  --lg-muted-foreground:    oklch(0.708 0 0);
-  --lg-accent-foreground:   oklch(0.985 0 0);
-
-  --lg-primary:             oklch(0.424 0.199 265.638);
-  --lg-primary-foreground:  oklch(0.97 0.014 254.604);
-
-  --lg-destructive:         oklch(0.704 0.191 22.216);
-
-  --lg-border:              oklch(1 0 0 / 10%);
-  --lg-input:               oklch(1 0 0 / 15%);
-  --lg-ring:                oklch(0.556 0 0);
+  --color-background: oklch(0.145 0 0);
+  --color-foreground: oklch(0.985 0 0);
+  --color-card: oklch(0.205 0 0);
+  --color-card-foreground: oklch(0.985 0 0);
+  --color-popover: oklch(0.205 0 0);
+  --color-popover-foreground: oklch(0.985 0 0);
+  --color-primary: oklch(0.424 0.199 265.638);
+  --color-primary-foreground: oklch(0.97 0.014 254.604);
+  --color-secondary: oklch(0.269 0 0);
+  --color-secondary-foreground: oklch(0.985 0 0);
+  --color-muted: oklch(0.269 0 0);
+  --color-muted-foreground: oklch(0.708 0 0);
+  --color-accent: oklch(0.269 0 0);
+  --color-accent-foreground: oklch(0.985 0 0);
+  --color-destructive: oklch(0.704 0.191 22.216);
+  --color-destructive-foreground: oklch(0.985 0 0);
+  --color-border: oklch(1 0 0 / 10%);
+  --color-input: oklch(1 0 0 / 15%);
+  --color-ring: oklch(0.556 0 0);
+  --color-sidebar: oklch(0.205 0 0);
+  --color-sidebar-foreground: oklch(0.985 0 0);
 }
 
-/* ─── Radius Scale ───────────────────────────────────────────────────────── */
-:root {
-  --lg-radius-base:  0.625rem;   /* 10px  — base */
-  --lg-radius-sm:    0.375rem;   /* 6px   — small (calc * 0.6) */
-  --lg-radius-md:    0.5rem;     /* 8px   — medium (calc * 0.8) */
-  --lg-radius-lg:    0.625rem;   /* 10px  — lg (= base) */
-  --lg-radius-xl:    0.875rem;   /* 14px  — buttons, inputs, nav items */
-  --lg-radius-2xl:   1.125rem;   /* 18px  — cards, panels */
-  --lg-radius-3xl:   1.375rem;   /* 22px  — modals */
-  --lg-radius-4xl:   1.625rem;   /* 26px  — hero cards */
-  --lg-radius-full:  9999px;     /* pills, dots, avatars */
+/* ─── Base ──────────────────────────────────────────────────────────────── */
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    color: var(--color-foreground);
+    background-color: var(--color-background);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
 }
 
-/* ─── Spacing Scale ──────────────────────────────────────────────────────── */
-:root {
-  --lg-space-1:   0.25rem;   /* 4px  */
-  --lg-space-2:   0.5rem;    /* 8px  */
-  --lg-space-3:   0.75rem;   /* 12px */
-  --lg-space-4:   1rem;      /* 16px */
-  --lg-space-5:   1.25rem;   /* 20px */
-  --lg-space-6:   1.5rem;    /* 24px — page content padding */
-  --lg-space-8:   2rem;      /* 32px */
-  --lg-space-10:  2.5rem;    /* 40px */
-  --lg-space-12:  3rem;      /* 48px */
+/* ─── Utilities ─────────────────────────────────────────────────────────── */
+@layer utilities {
 
-  --lg-sidebar-width:  240px;   /* w-60 */
-  --lg-content-max:    1200px;  /* max-w-6xl marketing */
+  /* Gradient text */
+  .text-gradient {
+    background: linear-gradient(135deg, oklch(0.50 0.260 264.4), oklch(0.55 0.22 300));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  /* ── Keyframes ── */
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0);    }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0);   }
+    50%      { transform: translateY(-7px); }
+  }
+  @keyframes spin-slow {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1;   }
+    50%      { opacity: 0.5; }
+  }
+  @keyframes ticker {
+    0%   { transform: translateX(0);    }
+    100% { transform: translateX(-50%); }
+  }
+  @keyframes shimmer {
+    from { background-position: -200% center; }
+    to   { background-position:  200% center; }
+  }
+
+  /* ── Animation utilities ── */
+  .animate-fade-up     { animation: fade-up    var(--duration-base) var(--ease-spring); }
+  .animate-fade-in     { animation: fade-in    var(--duration-base) ease-out; }
+  .animate-float       { animation: float      3.2s ease-in-out infinite; }
+  .animate-spin-slow   { animation: spin-slow  2s linear infinite; }
+  .animate-pulse-soft  { animation: pulse-soft 2.5s ease-in-out infinite; }
+  .animate-ticker      { animation: ticker 28s linear infinite; }
+
+  /* ── Hero entry stagger ── */
+  .hero-1 { animation: fade-up 0.45s ease-out both;  animation-delay:   0ms; }
+  .hero-2 { animation: fade-up 0.45s ease-out both;  animation-delay:  90ms; }
+  .hero-3 { animation: fade-up 0.45s ease-out both;  animation-delay: 180ms; }
+  .hero-4 { animation: fade-up 0.45s ease-out both;  animation-delay: 260ms; }
+  .hero-5 { animation: fade-up 0.55s ease-out both;  animation-delay: 360ms; }
+
+  /* ── Scroll reveal (triggered by JS adding .revealed) ── */
+  .reveal,
+  .reveal-l,
+  .reveal-r {
+    opacity: 0;
+    transition: opacity 0.55s ease, transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .reveal   { transform: translateY(22px); }
+  .reveal-l { transform: translateX(-22px); }
+  .reveal-r { transform: translateX(22px); }
+  .reveal.revealed,
+  .reveal-l.revealed,
+  .reveal-r.revealed {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* ── Misc ── */
+  .transition-spring { transition-timing-function: var(--ease-spring); }
+  .transition-fast   { transition-duration: var(--duration-fast); }
+
+  .container-content {
+    max-width: var(--container-content);
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
 }
 
-/* ─── Shadow Scale ───────────────────────────────────────────────────────── */
-:root {
-  --lg-shadow-sm:   0 1px 2px 0 oklch(0 0 0 / 0.05);
-  --lg-shadow-md:   0 4px 6px -1px oklch(0 0 0 / 0.07), 0 2px 4px -2px oklch(0 0 0 / 0.05);
-  --lg-shadow-lg:   0 10px 15px -3px oklch(0 0 0 / 0.07), 0 4px 6px -4px oklch(0 0 0 / 0.05);
-  --lg-shadow-xl:   0 20px 25px -5px oklch(0 0 0 / 0.08), 0 8px 10px -6px oklch(0 0 0 / 0.05);
-  --lg-shadow-2xl:  0 25px 50px -12px oklch(0 0 0 / 0.20);
+/* ─── Components ────────────────────────────────────────────────────────── */
+@layer components {
+  .lg-display {
+    font-size: var(--text-display);
+    font-weight: var(--text-display--font-weight);
+    line-height: var(--text-display--line-height);
+    letter-spacing: var(--text-display--letter-spacing);
+    font-family: var(--font-sans);
+  }
+  .lg-h1 {
+    font-size: var(--text-h1);
+    font-weight: var(--text-h1--font-weight);
+    line-height: var(--text-h1--line-height);
+    letter-spacing: var(--text-h1--letter-spacing);
+  }
+  .lg-h2 {
+    font-size: var(--text-h2);
+    font-weight: var(--text-h2--font-weight);
+    line-height: var(--text-h2--line-height);
+  }
+  .lg-h3 {
+    font-size: var(--text-h3);
+    font-weight: var(--text-h3--font-weight);
+    line-height: var(--text-h3--line-height);
+  }
+  .lg-stat {
+    font-size: var(--text-stat);
+    font-weight: var(--text-stat--font-weight);
+    line-height: var(--text-stat--line-height);
+    letter-spacing: var(--text-stat--letter-spacing);
+  }
+  .lg-body {
+    font-size: var(--text-body);
+    font-weight: var(--text-body--font-weight);
+    line-height: var(--text-body--line-height);
+  }
+  .lg-caption {
+    font-size: var(--text-caption);
+    font-weight: var(--text-caption--font-weight);
+    line-height: var(--text-caption--line-height);
+    color: var(--color-muted-foreground);
+  }
+  .lg-label {
+    font-size: var(--text-label);
+    font-weight: var(--text-label--font-weight);
+    line-height: var(--text-label--line-height);
+    letter-spacing: var(--text-label--letter-spacing);
+    text-transform: var(--text-label--text-transform);
+  }
+  .lg-mono {
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+  }
+  .lg-card {
+    background-color: var(--color-card);
+    border-radius: var(--radius-2xl);
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow var(--duration-fast) ease;
+  }
+  .lg-card:hover { box-shadow: var(--shadow-md); }
 }
 
-/* ─── Typography — Font Families ─────────────────────────────────────────── */
-:root {
-  --lg-font-sans:    'DM Sans', 'Geist', ui-sans-serif, system-ui, sans-serif;
-  --lg-font-mono:    'DM Mono', 'Geist Mono', ui-monospace, monospace;
-  /* ⚠ Geist is the production font. DM Sans is the closest Google Fonts substitute.
-     Ask the client for the Geist font files to achieve pixel-perfect fidelity. */
+/* ─── Responsive ────────────────────────────────────────────────────────── */
+@media (min-width: 768px) {
+  .container-content { padding-left: 2rem; padding-right: 2rem; }
 }
-
-/* ─── Typography — Base Styles ───────────────────────────────────────────── */
-body {
-  font-family: var(--lg-font-sans);
-  color: var(--lg-foreground);
-  background: var(--lg-background);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-/* ─── Typography — Semantic Scale ────────────────────────────────────────── */
-
-/* Display / Hero — marketing only */
-.lg-display {
-  font-family: var(--lg-font-sans);
-  font-size: clamp(2.5rem, 5vw, 4rem);
-  font-weight: 800;
-  line-height: 1.1;
-  letter-spacing: -0.03em;
-  color: var(--lg-foreground);
-}
-
-/* Page title (h1) */
-.lg-h1 {
-  font-size: 1.25rem;        /* text-xl = 20px */
-  font-weight: 600;          /* font-semibold */
-  letter-spacing: -0.015em;  /* tracking-tight */
-  line-height: 1.4;
-}
-
-/* Section heading (h2) */
-.lg-h2 {
-  font-size: 1rem;           /* text-base = 16px */
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-/* Card heading / label */
-.lg-h3 {
-  font-size: 0.875rem;       /* text-sm = 14px */
-  font-weight: 600;
-  line-height: 1.5;
-}
-
-/* Stat number — large bold numerals on stat cards */
-.lg-stat {
-  font-size: 1.875rem;       /* text-3xl = 30px */
-  font-weight: 900;          /* font-black */
-  letter-spacing: -0.02em;
-  line-height: 1;
-}
-
-/* Body text */
-.lg-body {
-  font-size: 0.875rem;       /* text-sm = 14px */
-  font-weight: 400;
-  line-height: 1.6;
-}
-
-/* Caption / helper */
-.lg-caption {
-  font-size: 0.75rem;        /* text-xs = 12px */
-  font-weight: 400;
-  line-height: 1.5;
-  color: var(--lg-muted-foreground);
-}
-
-/* Badge / pill label */
-.lg-label {
-  font-size: 0.625rem;       /* ~10px */
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-/* Monospace — ticket serials, code */
-.lg-mono {
-  font-family: var(--lg-font-mono);
-  font-size: 0.875rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-}
-
-/* Invite code — large mono display */
-.lg-code-display {
-  font-family: var(--lg-font-mono);
-  font-size: 1.5rem;
-  font-weight: 900;
-  letter-spacing: 0.15em;
-}
-
-/* ─── Gradient Text Utility ──────────────────────────────────────────────── */
-.lg-text-gradient {
-  background: linear-gradient(135deg, oklch(0.50 0.260 264.4), oklch(0.60 0.200 290));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-/* ─── Animation Utilities ────────────────────────────────────────────────── */
-:root {
-  --lg-ease-spring: cubic-bezier(0.22, 1, 0.36, 1);  /* fast-out slow-in spring */
-  --lg-duration-fast:   150ms;
-  --lg-duration-base:   300ms;
-  --lg-duration-slow:   600ms;
-}
-
-@keyframes lg-fade-up {
-  from { opacity: 0; transform: translateY(24px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes lg-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes lg-float {
-  0%, 100% { transform: translateY(0); }
-  50%       { transform: translateY(-8px); }
-}
-
-@keyframes lg-spin {
-  to { transform: rotate(360deg); }
-}
-
-@keyframes lg-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.5; }
+@media (min-width: 1024px) {
+  .container-content { padding-left: 2.5rem; padding-right: 2.5rem; }
 }

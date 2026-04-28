@@ -85,15 +85,21 @@ const cashesDataSchema = z.object({
   receiptTime:    z.string().optional(),
 }).optional();
 
+const shiftEndEntrySchema = z.object({
+  slotNum:   z.number().int().min(1),
+  ticketEnd: z.coerce.number().int().min(0),
+});
+
 const clockOutSchema = z.object({
-  action:           z.literal("clock_out"),
-  shiftId:          z.string(),
-  ticketEnd:        z.coerce.number().int().min(0),
-  drawerCash:       z.coerce.number().min(0),
-  discrepancyNote:  z.string().optional(),
-  salesReceipt:     receiptDataSchema,
-  cashesReceipt:    cashesDataSchema,
-  booksSoldOut:     z.array(z.object({
+  action:          z.literal("clock_out"),
+  shiftId:         z.string(),
+  ticketEnd:       z.coerce.number().int().min(0).optional(),
+  shiftEndEntries: z.array(shiftEndEntrySchema).optional(),
+  drawerCash:      z.coerce.number().min(0),
+  discrepancyNote: z.string().optional(),
+  salesReceipt:    receiptDataSchema,
+  cashesReceipt:   cashesDataSchema,
+  booksSoldOut:    z.array(z.object({
     bookId:  z.string(),
     slotNum: z.number().int().min(1),
   })).optional(),
@@ -307,30 +313,42 @@ export async function POST(req: Request) {
       const activeShift = await getActiveShift(payload.orgId, payload.sub);
       if (!activeShift) return Response.json({ error: "No active shift found." }, { status: 404 });
 
+      if (!b.ticketEnd && (!b.shiftEndEntries?.length)) {
+        return Response.json({ error: "Provide ticketEnd or shiftEndEntries." }, { status: 400 });
+      }
+
       const shiftBooks = (activeShift.shiftBooks as { bookId: string; ticketStart: number; slotNum: number }[]) ?? [];
       const allBooks   = await listBooks(payload.orgId);
       const bookPriceMap: Record<string, number> = {};
       for (const bk of allBooks) bookPriceMap[bk.bookId as string] = bk.price as number;
 
-      // Sum tickets sold across all books in shift
       let totalTicketSale = 0;
-      if (shiftBooks.length > 0) {
+      let primaryTicketEnd = b.ticketEnd ?? 0;
+
+      if (b.shiftEndEntries?.length) {
+        // Per-slot end tickets (new enterprise flow)
+        const endBySlot: Record<number, number> = {};
+        for (const e of b.shiftEndEntries) endBySlot[e.slotNum] = e.ticketEnd;
+        primaryTicketEnd = b.shiftEndEntries[0].ticketEnd;
+
         for (const sb of shiftBooks) {
           const price   = bookPriceMap[sb.bookId] ?? 0;
-          const endTick = b.ticketEnd; // end ticket applies to last/primary book
-          const sold    = Math.max(0, endTick - sb.ticketStart);
-          totalTicketSale += sold * price;
+          const endTick = endBySlot[sb.slotNum] ?? 0;
+          totalTicketSale += Math.max(0, endTick - sb.ticketStart) * price;
         }
+      } else if (shiftBooks.length > 0) {
+        // Legacy multi-book with single ticketEnd (applies to primary book only)
+        const primary = shiftBooks[0];
+        const price   = bookPriceMap[primary.bookId] ?? 0;
+        totalTicketSale = Math.max(0, b.ticketEnd! - primary.ticketStart) * price;
       } else {
         // Legacy single-book shift
-        const singleBookId = (activeShift.shiftBooks as undefined) ?? null;
-        const slotN        = activeShift.slotNum as number;
-        const slots        = await listSlots(payload.orgId);
-        const slot         = slots.find((s) => (s.slotNum as number) === slotN);
-        const bkId         = slot?.bookId as string | undefined;
-        const price        = bkId ? (bookPriceMap[bkId] ?? 0) : 0;
-        void singleBookId;
-        totalTicketSale = Math.max(0, b.ticketEnd - (activeShift.ticketStart as number)) * price;
+        const slotN  = activeShift.slotNum as number;
+        const slots  = await listSlots(payload.orgId);
+        const slot   = slots.find((s) => (s.slotNum as number) === slotN);
+        const bkId   = slot?.bookId as string | undefined;
+        const price  = bkId ? (bookPriceMap[bkId] ?? 0) : 0;
+        totalTicketSale = Math.max(0, b.ticketEnd! - (activeShift.ticketStart as number)) * price;
       }
 
       const onlineNet     = b.salesReceipt?.onlineNetSales  ?? 0;
@@ -353,7 +371,7 @@ export async function POST(req: Request) {
       }
 
       await clockOut(payload.orgId, payload.sub, b.shiftId, {
-        ticketEnd:          b.ticketEnd,
+        ticketEnd:          primaryTicketEnd,
         salesReceipt:       b.salesReceipt as Record<string, unknown> | undefined,
         cashesReceipt:      b.cashesReceipt as Record<string, unknown> | undefined,
         finalCalc,
@@ -361,6 +379,16 @@ export async function POST(req: Request) {
         discrepancyNote:    b.discrepancyNote,
         discrepancySeverity,
       });
+
+      // Store per-slot end tickets for audit trail
+      if (b.shiftEndEntries?.length) {
+        await db.send(new UpdateCommand({
+          TableName: TABLE,
+          Key: { PK: `ORG#${payload.orgId}`, SK: `SHIFT#${payload.sub}#${b.shiftId}` },
+          UpdateExpression: "SET shiftEndEntries = :se",
+          ExpressionAttributeValues: { ":se": b.shiftEndEntries },
+        }));
+      }
 
       // Send manager notifications based on discrepancy
       if (discrepancySeverity === "over") {
