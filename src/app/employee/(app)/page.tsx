@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
-  Clock, CheckCircle, Ticket, TrendingUp,
+  Clock, CheckCircle, Check,
   Camera, AlertTriangle, X,
-  ArrowRight, BarChart2, LayoutGrid, Bell,
+  ArrowRight, ArrowLeft,
   Upload, Eye, RotateCcw, BookOpen, RefreshCw,
 } from "lucide-react";
 import { useAuth } from "@/components/auth-provider";
@@ -53,8 +54,6 @@ type ScannedEntry = {
   price?:      number;
 };
 
-type Tab = "shift" | "dashboard" | "alerts";
-
 type AlertEntry = {
   id:        string;
   severity:  "error" | "warning" | "info";
@@ -97,25 +96,13 @@ type ClockStep =
 
 const ALERTS_KEY = "lg_emp_alerts";
 
-function loadAlerts(sub: string): AlertEntry[] {
+function pushAlert(sub: string, severity: AlertEntry["severity"], message: string) {
   try {
     const raw = localStorage.getItem(`${ALERTS_KEY}_${sub}`);
-    return raw ? (JSON.parse(raw) as AlertEntry[]) : [];
-  } catch { return []; }
-}
-
-function saveAlerts(sub: string, alerts: AlertEntry[]) {
-  try {
-    localStorage.setItem(`${ALERTS_KEY}_${sub}`, JSON.stringify(alerts.slice(0, 50)));
+    const existing: AlertEntry[] = raw ? JSON.parse(raw) : [];
+    const entry: AlertEntry = { id: crypto.randomUUID(), severity, message, timestamp: new Date().toISOString() };
+    localStorage.setItem(`${ALERTS_KEY}_${sub}`, JSON.stringify([entry, ...existing].slice(0, 50)));
   } catch { /* storage full */ }
-}
-
-function pushAlert(sub: string, severity: AlertEntry["severity"], message: string): AlertEntry[] {
-  const existing = loadAlerts(sub);
-  const entry: AlertEntry = { id: crypto.randomUUID(), severity, message, timestamp: new Date().toISOString() };
-  const next = [entry, ...existing].slice(0, 50);
-  saveAlerts(sub, next);
-  return next;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,14 +129,6 @@ function fmtDuration(secs: number) {
   return `${h}:${m}:${s}`;
 }
 
-function fmtDurationMs(ms: number) {
-  const totalSecs = Math.round(ms / 1000);
-  const h = Math.floor(totalSecs / 3600);
-  const m = Math.floor((totalSecs % 3600) / 60);
-  if (h === 0) return `${m}m`;
-  return m ? `${h}h ${m}m` : `${h}h`;
-}
-
 function fmtTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -158,31 +137,9 @@ function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-function fmtAlertTime(iso: string) {
-  return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-function getWeekRange() {
-  const now = new Date();
-  const day = now.getDay();
-  const mon = new Date(now); mon.setDate(now.getDate() - ((day + 6) % 7)); mon.setHours(0, 0, 0, 0);
-  const sun = new Date(mon); sun.setDate(mon.getDate() + 6); sun.setHours(23, 59, 59, 999);
-  return { mon, sun };
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
-
-const PRICE_TIERS = [1, 2, 5, 10, 20, 30, 50];
-const TIER_COLOR: Record<number, string> = {
-   1: "bg-green-500",  2: "bg-teal-500",   5: "bg-blue-500",
-  10: "bg-violet-500",20: "bg-purple-500", 30: "bg-pink-500", 50: "bg-rose-500",
-};
-const TIER_TEXT: Record<number, string> = {
-   1: "text-green-700",  2: "text-teal-700",   5: "text-blue-700",
-  10: "text-violet-700",20: "text-purple-700", 30: "text-pink-700", 50: "text-rose-700",
-};
 
 const TIERS = [
   { price:  1, label:  "$1", color: "text-green-700",  bg: "bg-green-50",  border: "border-green-200",  headerBg: "bg-green-100"  },
@@ -203,28 +160,37 @@ const FOLD = { clipPath: "polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%
 
 function StepBar({ steps, current }: { steps: string[]; current: number }) {
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-start w-full py-1">
       {steps.map((label, i) => (
-        <div key={i} className="flex items-center gap-1">
-          <div className={cn(
-            "flex items-center gap-1.5 px-2 py-1 rounded-lg transition-colors",
-            i === current ? "bg-primary/10" : ""
-          )}>
-            <span className={cn(
-              "size-4 rounded-full flex items-center justify-center text-[9px] font-bold border shrink-0",
-              i < current  ? "bg-primary/20 border-primary/30 text-primary"           :
-              i === current ? "bg-primary border-primary text-primary-foreground"      :
-              "bg-background border-muted-foreground/30 text-muted-foreground/40"
+        <div key={i} className="flex items-start flex-1">
+          <div className="flex flex-col items-center gap-2 shrink-0">
+            <div className={cn(
+              "size-9 rounded-full flex items-center justify-center font-bold border-2 transition-all",
+              i < current
+                ? "bg-primary border-primary text-primary-foreground"
+                : i === current
+                ? "bg-primary border-primary text-primary-foreground ring-4 ring-primary/15"
+                : "bg-background border-border text-muted-foreground/40"
             )}>
-              {i < current ? "✓" : i + 1}
-            </span>
+              {i < current
+                ? <Check className="size-4" />
+                : <span className="text-sm">{i + 1}</span>
+              }
+            </div>
             <span className={cn(
-              "text-xs font-medium",
-              i === current ? "text-primary" : "text-muted-foreground/50"
-            )}>{label}</span>
+              "text-[11px] font-semibold text-center whitespace-nowrap leading-tight",
+              i === current ? "text-primary"     :
+              i < current  ? "text-primary/60"  :
+              "text-muted-foreground/40"
+            )}>
+              {label}
+            </span>
           </div>
           {i < steps.length - 1 && (
-            <span className="text-muted-foreground/30 text-xs">→</span>
+            <div className={cn(
+              "flex-1 h-[2px] mt-[17px] mx-2",
+              i < current ? "bg-primary" : "bg-border"
+            )} />
           )}
         </div>
       ))}
@@ -663,6 +629,7 @@ function ActiveSlotGrid({
 
 export default function EmployeeDashboard() {
   const { user } = useAuth();
+  const router = useRouter();
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const [shifts,     setShifts]     = useState<Shift[]>([]);
@@ -673,7 +640,6 @@ export default function EmployeeDashboard() {
   const [loading,    setLoading]    = useState(true);
 
   // ── UI ────────────────────────────────────────────────────────────────────
-  const [tab,       setTab]       = useState<Tab>("shift");
   const [clockStep, setClockStep] = useState<ClockStep>("idle");
 
   // Clock-in state
@@ -692,10 +658,6 @@ export default function EmployeeDashboard() {
     finalCalc: number; drawerCash: number; discrepancySeverity: string; diff: number;
   } | null>(null);
 
-  // Alerts
-  const [alerts,       setAlerts]       = useState<AlertEntry[]>([]);
-  const [unreadAlerts, setUnreadAlerts] = useState(0);
-
   const elapsed = useElapsed(active?.clockIn ?? null);
 
   // ── Load data ─────────────────────────────────────────────────────────────
@@ -713,7 +675,7 @@ export default function EmployeeDashboard() {
         const bk = bookId ? data.bookMap[bookId] : undefined;
         return {
           slotNum:     Number(n),
-          bookId,
+          bookId:      bk ? bookId : null,
           gameId:      bk?.gameId,
           gameName:    bk?.gameName,
           pack:        bk?.pack,
@@ -742,22 +704,12 @@ export default function EmployeeDashboard() {
 
   useEffect(() => { load(); loadSlots(); }, [load, loadSlots]);
 
-  useEffect(() => {
-    if (!user?.id) return;
-    const stored = loadAlerts(user.id);
-    setAlerts(stored);
-    setUnreadAlerts(stored.filter(a => a.severity === "error").length);
-  }, [user?.id]);
-
   useEffect(() => { if (active) setClockStep("active"); }, [active]);
 
   // ── Alert helper ──────────────────────────────────────────────────────────
 
   function addAlert(severity: AlertEntry["severity"], message: string) {
-    if (!user?.id) return;
-    const next = pushAlert(user.id, severity, message);
-    setAlerts(next);
-    if (severity === "error") setUnreadAlerts(p => p + 1);
+    if (user?.id) pushAlert(user.id, severity, message);
   }
 
   // ── Clock In ──────────────────────────────────────────────────────────────
@@ -902,34 +854,12 @@ export default function EmployeeDashboard() {
   const liveDiff  = liveCalc - drawerNum;
   const needsNote = drawerCash ? Math.abs(liveDiff) > 0.01 : false;
 
-  // Dashboard metrics
-  const completed    = shifts;
-  const totalSold    = completed.reduce((s, sh) => s + (sh.sold ?? 0), 0);
-  const totalMs      = completed.reduce((s, sh) => {
-    if (!sh.clockOut) return s;
-    return s + (new Date(sh.clockOut).getTime() - new Date(sh.clockIn).getTime());
-  }, 0);
-  const avgPerShift  = completed.length > 0 ? Math.round(totalSold / completed.length) : 0;
-  const soldByTier: Record<number, number> = {};
-  for (const sh of completed) {
-    const price = sh.bookPrice ?? 0;
-    if (price > 0) soldByTier[price] = (soldByTier[price] ?? 0) + (sh.sold ?? 0);
-  }
-  const maxTierSold = Math.max(1, ...Object.values(soldByTier));
-  const { mon, sun } = getWeekRange();
-  const weekMs = completed.reduce((s, sh) => {
-    if (!sh.clockOut) return s;
-    const ci = new Date(sh.clockIn);
-    if (ci < mon || ci > sun) return s;
-    return s + (new Date(sh.clockOut).getTime() - ci.getTime());
-  }, 0);
-
   const isOver  = summary?.discrepancySeverity === "over";
   const isShort = summary?.discrepancySeverity === "short";
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col">
+    <div className="flex-1 flex flex-col">
 
       {/* ── Shift complete summary modal ── */}
       {summary && (
@@ -965,7 +895,7 @@ export default function EmployeeDashboard() {
                 </div>
               ))}
             </div>
-            <button onClick={() => { setSummary(null); setTab("dashboard"); }}
+            <button onClick={() => { setSummary(null); router.push("/employee/dashboard"); }}
               className="w-full bg-primary text-primary-foreground py-3 rounded-2xl text-sm font-semibold hover:opacity-90 transition-opacity">
               View Dashboard
             </button>
@@ -986,95 +916,83 @@ export default function EmployeeDashboard() {
         </div>
       )}
 
-      {/* ── Tab bar ── */}
-      <div className="border-b px-4 mt-1">
-        <div className="flex max-w-lg mx-auto gap-0">
-          {([
-            { id: "shift",     label: active ? "My Shift" : "Clock In/Out", icon: Clock    },
-            { id: "dashboard", label: "Dashboard",                           icon: BarChart2 },
-            { id: "alerts",    label: "Alerts",                              icon: Bell,     badge: unreadAlerts },
-          ] as { id: Tab; label: string; icon: React.ElementType; badge?: number }[]).map(({ id, label, icon: Icon, badge }) => (
-            <button key={id}
-              onClick={() => { setTab(id); if (id === "alerts") setUnreadAlerts(0); }}
-              className={cn(
-                "flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors relative",
-                tab === id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Icon className="size-4" />
-              {label}
-              {id === "shift" && active && <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />}
-              {badge != null && badge > 0 && (
-                <span className="absolute -top-0.5 right-1 size-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                  {badge > 9 ? "9+" : badge}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <main className="max-w-lg mx-auto w-full px-4 py-6 space-y-5">
-
-        {/* ══════════════════════════════════════════════════════════════════
-            SHIFT TAB
-        ══════════════════════════════════════════════════════════════════ */}
-        {tab === "shift" && (
-          <>
+      <main className={cn(
+        "w-full px-4 flex-1 flex flex-col",
+        clockStep === "slot_select" || clockStep === "active"
+          ? "max-w-3xl mx-auto py-4"
+          : "max-w-lg mx-auto py-8"
+      )}>
+        <div className="flex-1 flex flex-col">
 
             {/* ── IDLE ── */}
             {clockStep === "idle" && (
-              <div className="flex flex-col items-center justify-center py-14 space-y-6 text-center">
-                <div className="size-20 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Clock className="size-10 text-primary" />
+              <div className="flex-1 flex flex-col items-center justify-center min-h-[60vh] space-y-8 text-center">
+                <div className="size-24 rounded-full bg-primary/10 flex items-center justify-center ring-8 ring-primary/5">
+                  <Clock className="size-12 text-primary" />
                 </div>
-                <div className="space-y-1.5">
-                  <p className="text-lg font-bold">Ready to start your shift?</p>
-                  <p className="text-sm text-muted-foreground">
-                    Hi {user?.name?.split(" ")[0] ?? "there"} — select your slots to begin.
+                <div className="space-y-2">
+                  <p className="text-2xl font-bold">Ready to clock in?</p>
+                  <p className="text-base text-muted-foreground">
+                    Hi {user?.name?.split(" ")[0] ?? "there"} — select your slots to begin your shift.
                   </p>
                 </div>
                 <button
                   onClick={() => { setClockStep("slot_select"); setClockInError(""); }}
-                  className="w-full max-w-xs flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-base hover:opacity-90 transition-opacity shadow-sm"
+                  className="w-full max-w-xs flex items-center justify-center gap-2.5 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-lg hover:opacity-90 transition-opacity shadow-md"
                 >
                   <Clock className="size-5" /> Clock In
                 </button>
               </div>
             )}
 
-            {/* ── SLOT SELECT ── */}
+            {/* ── SLOT SELECT (full-width) ── */}
             {clockStep === "slot_select" && (
-              <div className="space-y-5">
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => { setClockStep("idle"); setSelectedSlots([]); }}
-                      className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                    <div className="flex-1">
-                      <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={0} />
-                    </div>
-                  </div>
-                  <div className="flex items-start justify-between gap-2">
+              <div className="space-y-4">
+                {/* Header — stays narrow */}
+                <div className="max-w-lg mx-auto space-y-5">
+                  <button
+                    onClick={() => { setClockStep("idle"); setSelectedSlots([]); }}
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <ArrowLeft className="size-4" /> Back
+                  </button>
+                  <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={0} />
+                  <div className="flex items-start justify-between gap-3 pt-1">
                     <div>
-                      <p className="text-base font-bold">Select Your Slots</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Tap each slot you will be operating during this shift.
+                      <p className="text-xl font-bold">Select Your Slots</p>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Tap every slot you will operate this shift.
                       </p>
                     </div>
-                    {selectedSlots.length > 0 && (
-                      <span className="shrink-0 text-xs bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded-full border border-primary/20">
-                        {selectedSlots.length} selected
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0 pt-1">
+                      {selectedSlots.length > 0 && (
+                        <span className="text-xs bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded-full border border-primary/20">
+                          {selectedSlots.length} selected
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allSelectable = slots
+                            .filter(s => s.bookId && s.status !== "settled")
+                            .map(s => s.slotNum);
+                          setSelectedSlots(allSelectable);
+                        }}
+                        className="text-sm font-semibold text-primary hover:underline"
+                      >
+                        Select All
+                      </button>
+                    </div>
                   </div>
+
+                  {clockInError && (
+                    <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/8 border border-destructive/15 rounded-xl px-4 py-3">
+                      <AlertTriangle className="size-4 shrink-0 mt-0.5" />{clockInError}
+                    </div>
+                  )}
                 </div>
 
-                {clockInError && (
-                  <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/8 border border-destructive/15 rounded-xl px-4 py-3">
-                    <AlertTriangle className="size-4 shrink-0 mt-0.5" />{clockInError}
-                  </div>
-                )}
-
+                {/* Slot grid — full width */}
                 {loading ? (
                   <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
                     <RefreshCw className="size-4 animate-spin" /> Loading slots…
@@ -1091,37 +1009,38 @@ export default function EmployeeDashboard() {
                   />
                 )}
 
-                <button
-                  onClick={() => {
-                    if (selectedSlots.length === 0) { setClockInError("Select at least one slot to continue."); return; }
-                    setClockInError("");
-                    setClockStep("slot_tickets");
-                  }}
-                  disabled={selectedSlots.length === 0}
-                  className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50 shadow-sm"
-                >
-                  <ArrowRight className="size-4" />
-                  Continue with {selectedSlots.length > 0
-                    ? `${selectedSlots.length} slot${selectedSlots.length !== 1 ? "s" : ""}`
-                    : "selected slots"}
-                </button>
+                {/* Continue — stays narrow */}
+                <div className="max-w-lg mx-auto">
+                  <button
+                    onClick={() => {
+                      if (selectedSlots.length === 0) { setClockInError("Select at least one slot to continue."); return; }
+                      setClockInError("");
+                      setClockStep("slot_tickets");
+                    }}
+                    disabled={selectedSlots.length === 0}
+                    className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50 shadow-sm"
+                  >
+                    <ArrowRight className="size-4" />
+                    Continue with {selectedSlots.length > 0
+                      ? `${selectedSlots.length} slot${selectedSlots.length !== 1 ? "s" : ""}`
+                      : "selected slots"}
+                  </button>
+                </div>
               </div>
             )}
 
             {/* ── SLOT TICKETS ── */}
             {clockStep === "slot_tickets" && (
               <div className="space-y-5">
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => { setClockStep("slot_select"); setClockInError(""); }}
-                      className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                    <div className="flex-1">
-                      <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={1} />
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-base font-bold">Enter Starting Ticket Numbers</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
+                <div className="space-y-5">
+                  <button onClick={() => { setClockStep("slot_select"); setClockInError(""); }}
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                    <ArrowLeft className="size-4" /> Back
+                  </button>
+                  <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={1} />
+                  <div className="pt-1">
+                    <p className="text-xl font-bold">Enter Starting Tickets</p>
+                    <p className="text-sm text-muted-foreground mt-1">
                       Enter the number on the first unsold ticket of each book exactly as printed.
                     </p>
                   </div>
@@ -1211,15 +1130,16 @@ export default function EmployeeDashboard() {
             {/* ── PREVIEW ── */}
             {clockStep === "preview" && (
               <div className="space-y-5">
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => { setClockStep("slot_tickets"); setClockInError(""); }}
-                      className="text-xs text-muted-foreground hover:text-foreground">← Edit</button>
-                    <div className="flex-1">
-                      <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={2} />
-                    </div>
+                <div className="space-y-5">
+                  <button onClick={() => { setClockStep("slot_tickets"); setClockInError(""); }}
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                    <ArrowLeft className="size-4" /> Back
+                  </button>
+                  <StepBar steps={["Select Slots", "Start Tickets", "Review"]} current={2} />
+                  <div className="pt-1">
+                    <p className="text-xl font-bold">Review & Start Shift</p>
+                    <p className="text-sm text-muted-foreground mt-1">Confirm your slot assignments before clocking in.</p>
                   </div>
-                  <p className="text-base font-bold">Review & Start Shift</p>
                 </div>
 
                 {clockInError && (
@@ -1269,11 +1189,11 @@ export default function EmployeeDashboard() {
               </div>
             )}
 
-            {/* ── ACTIVE SHIFT ── */}
+            {/* ── ACTIVE SHIFT (full-width) ── */}
             {clockStep === "active" && active && (
               <div className="space-y-4">
-                {/* Active shift header card */}
-                <div className="border-2 border-emerald-300/50 rounded-3xl p-5 bg-emerald-50/40 space-y-4">
+                {/* Header — stays narrow */}
+                <div className="max-w-lg mx-auto border-2 border-emerald-300/50 rounded-3xl p-5 bg-emerald-50/40 space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="size-2.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -1284,12 +1204,10 @@ export default function EmployeeDashboard() {
                     </span>
                   </div>
 
-                  {/* Shift start time */}
                   <p className="text-xs text-emerald-700/70">
                     Started at {fmtTime(active.clockIn)} · {fmtDate(active.clockIn)}
                   </p>
 
-                  {/* Active books list */}
                   <div className="space-y-2">
                     {(active.shiftBooks?.length
                       ? active.shiftBooks
@@ -1320,8 +1238,8 @@ export default function EmployeeDashboard() {
                   </div>
                 </div>
 
-                {/* Current slot overview with sold-out controls */}
-                <div className="border rounded-2xl p-4 space-y-3">
+                {/* Slot board — full width */}
+                <div className="bg-card border rounded-2xl p-4 space-y-3">
                   <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
                     <BookOpen className="size-3.5" /> Current Slot Board
                   </p>
@@ -1334,29 +1252,30 @@ export default function EmployeeDashboard() {
                   />
                 </div>
 
-                <button
-                  onClick={() => setClockStep("clockout_slots")}
-                  className="w-full flex items-center justify-center gap-2 bg-destructive text-white py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity shadow-sm"
-                >
-                  <ArrowRight className="size-4" /> Clock Out
-                </button>
+                {/* Clock out — stays narrow */}
+                <div className="max-w-lg mx-auto">
+                  <button
+                    onClick={() => setClockStep("clockout_slots")}
+                    className="w-full flex items-center justify-center gap-2 bg-destructive text-white py-4 rounded-2xl font-bold text-sm hover:opacity-90 transition-opacity shadow-sm"
+                  >
+                    <ArrowRight className="size-4" /> Clock Out
+                  </button>
+                </div>
               </div>
             )}
 
             {/* ── CLOCK OUT: End Tickets per Slot ── */}
             {clockStep === "clockout_slots" && active && (
               <div className="space-y-5">
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setClockStep("active")}
-                      className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                    <div className="flex-1">
-                      <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={0} />
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-base font-bold">Record Ending Tickets</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
+                <div className="space-y-5">
+                  <button onClick={() => setClockStep("active")}
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                    <ArrowLeft className="size-4" /> Back
+                  </button>
+                  <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={0} />
+                  <div className="pt-1">
+                    <p className="text-xl font-bold">Record Ending Tickets</p>
+                    <p className="text-sm text-muted-foreground mt-1">
                       Enter the last ticket number you sold for each slot.
                     </p>
                   </div>
@@ -1457,13 +1376,15 @@ export default function EmployeeDashboard() {
 
             {/* ── CLOCK OUT: Sales Receipt ── */}
             {clockStep === "clockout_receipt_sales" && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setClockStep("clockout_slots")}
-                    className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                  <div className="flex-1">
-                    <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={1} />
-                  </div>
+              <div className="space-y-5">
+                <button onClick={() => setClockStep("clockout_slots")}
+                  className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  <ArrowLeft className="size-4" /> Back
+                </button>
+                <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={1} />
+                <div className="pt-1">
+                  <p className="text-xl font-bold">Upload Sales Receipt</p>
+                  <p className="text-sm text-muted-foreground mt-1">Scan or photograph your sales receipt for today.</p>
                 </div>
 
                 {salesReceipt ? (
@@ -1500,13 +1421,15 @@ export default function EmployeeDashboard() {
 
             {/* ── CLOCK OUT: Cashes Receipt ── */}
             {clockStep === "clockout_receipt_cashes" && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setClockStep("clockout_receipt_sales")}
-                    className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
-                  <div className="flex-1">
-                    <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={2} />
-                  </div>
+              <div className="space-y-5">
+                <button onClick={() => setClockStep("clockout_receipt_sales")}
+                  className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  <ArrowLeft className="size-4" /> Back
+                </button>
+                <StepBar steps={["End Tickets", "Sales", "Cashes", "Drawer"]} current={2} />
+                <div className="pt-1">
+                  <p className="text-xl font-bold">Upload Cashes Receipt</p>
+                  <p className="text-sm text-muted-foreground mt-1">Scan or photograph your cashes receipt for today.</p>
                 </div>
 
                 {cashesReceipt ? (
@@ -1680,175 +1603,7 @@ export default function EmployeeDashboard() {
               </div>
             )}
 
-          </>
-        )}
-
-        {/* ══════════════════════════════════════════════════════════════════
-            DASHBOARD TAB
-        ══════════════════════════════════════════════════════════════════ */}
-        {tab === "dashboard" && (
-          <>
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { label: "Tickets Sold",    value: totalSold.toLocaleString(),  icon: Ticket,     color: "text-primary"     },
-                { label: "Shifts Worked",   value: String(completed.length),    icon: Clock,      color: "text-violet-600"  },
-                { label: "Hours This Week", value: fmtDurationMs(weekMs),       icon: TrendingUp, color: "text-emerald-600" },
-                { label: "Avg per Shift",   value: String(avgPerShift),         icon: LayoutGrid, color: "text-blue-600"    },
-              ].map(({ label, value, icon: Icon, color }) => (
-                <div key={label} className="border rounded-2xl p-4 space-y-2 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground font-medium">{label}</p>
-                    <Icon className={cn("size-4", color)} />
-                  </div>
-                  <p className="text-3xl font-black tracking-tight">{value}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="border rounded-2xl p-5 space-y-3 shadow-sm">
-              <p className="text-sm font-semibold">Tickets Sold by Category</p>
-              {PRICE_TIERS.filter(t => (soldByTier[t] ?? 0) > 0).length === 0 ? (
-                <p className="text-xs text-muted-foreground py-3 text-center">No completed shifts yet.</p>
-              ) : (
-                PRICE_TIERS.map(price => {
-                  const sold = soldByTier[price] ?? 0;
-                  if (!sold) return null;
-                  const pct = Math.round((sold / maxTierSold) * 100);
-                  return (
-                    <div key={price} className="flex items-center gap-3">
-                      <span className={cn("text-xs font-bold w-8 shrink-0", TIER_TEXT[price])}>
-                        ${price}
-                      </span>
-                      <div className="flex-1 bg-muted rounded-full h-5 overflow-hidden">
-                        <div className={cn("h-full rounded-full transition-all", TIER_COLOR[price])} style={{ width: `${pct}%` }} />
-                      </div>
-                      <span className="text-xs font-semibold w-12 text-right">{sold.toLocaleString()}</span>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-1.5">
-                <Clock className="size-3.5" /> Shift History
-              </h2>
-              <div className="border rounded-2xl divide-y overflow-hidden shadow-sm">
-                {loading ? (
-                  Array.from({ length: 3 }).map((_, i) => (
-                    <div key={i} className="flex items-center justify-between px-4 py-4">
-                      <div className="space-y-2">
-                        <div className="h-4 bg-muted rounded animate-pulse w-28" />
-                        <div className="h-3 bg-muted rounded animate-pulse w-20" />
-                      </div>
-                      <div className="h-4 bg-muted rounded animate-pulse w-16" />
-                    </div>
-                  ))
-                ) : completed.length === 0 ? (
-                  <p className="text-center py-10 text-sm text-muted-foreground">No completed shifts yet.</p>
-                ) : (
-                  completed.map(s => {
-                    const durationMs = s.clockOut
-                      ? new Date(s.clockOut).getTime() - new Date(s.clockIn).getTime() : 0;
-                    return (
-                      <div key={s.shiftId} className="px-4 py-4 hover:bg-muted/20 transition-colors space-y-1">
-                        <div className="flex items-center justify-between gap-4">
-                          <div className="min-w-0">
-                            <p className="font-medium text-sm">{fmtDate(s.clockIn)}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {fmtTime(s.clockIn)}{s.clockOut ? ` – ${fmtTime(s.clockOut)}` : ""}
-                              {" · Slot "}{s.slotNum}
-                              {durationMs > 0 && ` · ${fmtDurationMs(durationMs)}`}
-                            </p>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="text-sm font-bold text-primary">{s.sold ?? 0} sold</p>
-                            <p className="text-xs text-muted-foreground font-mono">
-                              #{s.ticketStart}→#{s.ticketEnd ?? "?"}
-                            </p>
-                          </div>
-                        </div>
-                        {s.finalCalc != null && (
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="text-muted-foreground">Final:</span>
-                            <span className="font-semibold">${s.finalCalc.toFixed(2)}</span>
-                            {s.discrepancySeverity === "over"  && <span className="text-red-600 font-medium">⚠ Over</span>}
-                            {s.discrepancySeverity === "short" && <span className="text-amber-600 font-medium">△ Short</span>}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ══════════════════════════════════════════════════════════════════
-            ALERTS TAB
-        ══════════════════════════════════════════════════════════════════ */}
-        {tab === "alerts" && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Alerts & Notifications</h2>
-              {alerts.length > 0 && (
-                <button
-                  onClick={() => {
-                    if (!user?.id) return;
-                    saveAlerts(user.id, []);
-                    setAlerts([]);
-                    setUnreadAlerts(0);
-                  }}
-                  className="text-xs text-muted-foreground hover:text-destructive transition-colors"
-                >
-                  Clear all
-                </button>
-              )}
-            </div>
-
-            {alerts.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-center space-y-3">
-                <div className="size-14 rounded-full bg-muted flex items-center justify-center">
-                  <Bell className="size-6 text-muted-foreground" />
-                </div>
-                <p className="text-sm text-muted-foreground">No alerts yet.</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {alerts.map(a => (
-                  <div key={a.id} className={cn(
-                    "flex items-start gap-3 px-4 py-3 rounded-xl border text-sm",
-                    a.severity === "error"   && "bg-red-50 border-red-200 text-red-800",
-                    a.severity === "warning" && "bg-amber-50 border-amber-200 text-amber-800",
-                    a.severity === "info"    && "bg-blue-50 border-blue-200 text-blue-800",
-                  )}>
-                    <AlertTriangle className={cn(
-                      "size-4 shrink-0 mt-0.5",
-                      a.severity === "error"   && "text-red-500",
-                      a.severity === "warning" && "text-amber-500",
-                      a.severity === "info"    && "text-blue-500",
-                    )} />
-                    <div className="flex-1 min-w-0">
-                      <p className="leading-snug">{a.message}</p>
-                      <p className="text-xs opacity-60 mt-1">{fmtAlertTime(a.timestamp)}</p>
-                    </div>
-                    <button
-                      onClick={() => {
-                        const next = alerts.filter(x => x.id !== a.id);
-                        setAlerts(next);
-                        if (user?.id) saveAlerts(user.id, next);
-                      }}
-                      className="shrink-0 opacity-40 hover:opacity-80 transition-opacity"
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        </div>
 
       </main>
     </div>

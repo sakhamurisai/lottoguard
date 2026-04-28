@@ -26,16 +26,16 @@ export function MarketingNav() {
       className={cn(
         "sticky top-0 z-50 transition-all duration-300",
         scrolled
-          ? "bg-white/90 backdrop-blur-xl border-b shadow-sm"
-          : "bg-white border-b"
+          ? "bg-background/90 backdrop-blur-xl border-b border-border shadow-sm"
+          : "bg-background border-b border-border"
       )}
     >
       <div className="max-w-6xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-6">
 
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-2.5 font-bold text-[15px] shrink-0">
+        <Link href="/" className="flex items-center gap-2.5 font-bold text-[15px] text-foreground shrink-0">
           <div className="size-8 rounded-xl bg-primary flex items-center justify-center shadow-sm">
-            <ShieldCheck weight="fill" className="size-4 text-white" />
+            <ShieldCheck weight="fill" className="size-4 text-primary-foreground" />
           </div>
           <span>LottoGuard</span>
         </Link>
@@ -46,7 +46,7 @@ export function MarketingNav() {
             <a
               key={l.label}
               href={l.href}
-              className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-muted/60 font-medium"
+              className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-muted font-medium"
             >
               {l.label}
             </a>
@@ -57,7 +57,7 @@ export function MarketingNav() {
         <div className="hidden md:flex items-center gap-2 shrink-0">
           <Link
             href="/login"
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors px-4 py-2 rounded-lg hover:bg-muted/60 font-medium"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors px-4 py-2 rounded-lg hover:bg-muted font-medium"
           >
             Sign in
           </Link>
@@ -80,20 +80,20 @@ export function MarketingNav() {
 
       {/* Mobile drawer */}
       {open && (
-        <div className="md:hidden border-t bg-white px-5 py-3 space-y-1">
+        <div className="md:hidden border-t border-border bg-background px-5 py-3 space-y-1">
           {LINKS.map((l) => (
             <a
               key={l.label}
               href={l.href}
               onClick={() => setOpen(false)}
-              className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground rounded-xl hover:bg-muted/60 transition-colors"
+              className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground rounded-xl hover:bg-muted transition-colors"
             >
               {l.label}
             </a>
           ))}
-          <div className="pt-3 flex flex-col gap-2 border-t mt-2">
+          <div className="pt-3 flex flex-col gap-2 border-t border-border mt-2">
             <Link href="/login" onClick={() => setOpen(false)}
-              className="text-sm text-center border rounded-xl py-2.5 font-medium hover:bg-muted transition-colors">
+              className="text-sm text-center border border-border text-foreground rounded-xl py-2.5 font-medium hover:bg-muted transition-colors">
               Sign in
             </Link>
             <Link href="/owner/signup" onClick={() => setOpen(false)}
