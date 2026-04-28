@@ -1,12 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import {
   ArrowClockwise, UploadSimple, X, CheckCircle,
   Warning, Spinner, FileMagnifyingGlass, Camera, Upload, ArrowRight,
-  Package,
+  Package, MagnifyingGlass, Funnel, ToggleLeft, BookOpen, Lightning,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
+
+const TIER_HEX: Record<number, string> = {
+   1: "#10b981",  2: "#14b8a6",  5: "#0ea5e9", 10: "#3b82f6",
+  20: "#8b5cf6", 30: "#d946ef", 50: "#f43f5e",
+};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -357,6 +362,9 @@ export default function BooksPage() {
   const [tab,       setTab]       = useState<Status | "all">("all");
   const [updating,  setUpdating]  = useState<string | null>(null);
   const [selectedShipmentId, setSelectedShipmentId] = useState<string>("");
+  const [query,        setQuery]        = useState("");
+  const [priceFilter,  setPriceFilter]  = useState<number | "all">("all");
+  const [view,         setView]         = useState<"table" | "cards">("table");
 
   const [modal, setModal] = useState<{ book: Book; action: ActionType } | null>(null);
 
@@ -424,24 +432,31 @@ export default function BooksPage() {
 
   // ── Derived ──────────────────────────────────────────────────────────────────
 
-  const booksInView = selectedShipmentId
-    ? books.filter((b) => b.shipmentId === selectedShipmentId)
-    : books;
+  const booksInView = useMemo(() => {
+    let list = selectedShipmentId
+      ? books.filter((b) => b.shipmentId === selectedShipmentId)
+      : books;
+    if (priceFilter !== "all") list = list.filter((b) => b.price === priceFilter);
+    if (query.trim()) {
+      const q = query.toLowerCase().trim();
+      list = list.filter((b) =>
+        b.gameName.toLowerCase().includes(q) ||
+        b.gameId.toLowerCase().includes(q) ||
+        b.pack.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [books, selectedShipmentId, priceFilter, query]);
 
   const visible       = tab === "all" ? booksInView : booksInView.filter((b) => b.status === tab);
   const inactiveCount = booksInView.filter((b) => b.status === "inactive").length;
   const activeCount   = booksInView.filter((b) => b.status === "active").length;
+  const settledCount  = booksInView.filter((b) => b.status === "settled").length;
   const selectedShipment = shipments.find((s) => s.shipmentId === selectedShipmentId);
-
-  // Shipment stats for the selected item
-  const shipmentStats = selectedShipment ? {
-    active:   booksInView.filter((b) => b.status === "active").length,
-    inactive: booksInView.filter((b) => b.status === "inactive").length,
-    settled:  booksInView.filter((b) => b.status === "settled").length,
-  } : null;
+  const totalValue = booksInView.reduce((sum, b) => sum + b.price, 0);
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-4 sm:p-6 space-y-5 max-w-[1400px] mx-auto">
       {modal && (
         <ReceiptModal
           book={modal.book}
@@ -452,21 +467,24 @@ export default function BooksPage() {
       )}
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Activate / Settle</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Select a shipment to manage its books</p>
+      <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-2xl font-black tracking-tight flex items-center gap-2">
+            <ToggleLeft weight="fill" className="size-6 text-primary" />
+            Activate / Settle
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">Manage book statuses · scan terminal receipts to verify</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {inactiveCount > 0 && (
             <button onClick={() => bulkUpdate("inactive", "active")} disabled={!!updating}
-              className="text-xs px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-colors font-medium disabled:opacity-50">
-              Activate All ({inactiveCount})
+              className="text-xs px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-colors font-semibold disabled:opacity-50 flex items-center gap-1.5 shadow-sm">
+              <Lightning weight="fill" className="size-3.5" /> Activate All ({inactiveCount})
             </button>
           )}
           {activeCount > 0 && (
             <button onClick={() => bulkUpdate("active", "inactive")} disabled={!!updating}
-              className="text-xs px-3 py-2 rounded-xl border hover:bg-accent transition-colors font-medium disabled:opacity-50">
+              className="text-xs px-3 py-2 rounded-xl border hover:bg-muted transition-colors font-semibold disabled:opacity-50">
               Deactivate All ({activeCount})
             </button>
           )}
@@ -476,93 +494,101 @@ export default function BooksPage() {
         </div>
       </div>
 
-      {/* ── Shipment Selector ─────────────────────────────────────────────────── */}
-      <div className="border rounded-2xl overflow-hidden shadow-sm">
-        {/* Selector header */}
-        <div className="flex items-center gap-2.5 px-5 py-4 border-b bg-muted/30">
-          <Package className="size-4 text-muted-foreground shrink-0" />
-          <h2 className="text-sm font-semibold flex-1">Shipment</h2>
-          {selectedShipmentId && (
-            <button
-              onClick={() => { setSelectedShipmentId(""); setTab("all"); }}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
-              <X className="size-3.5" /> Clear
-            </button>
-          )}
-        </div>
+      {/* Quick stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+        {[
+          { label: "Active",    value: activeCount,   color: "text-emerald-700", bg: "bg-emerald-50 border-emerald-200" },
+          { label: "Inactive",  value: inactiveCount, color: "text-foreground",  bg: "bg-muted/40 border-border" },
+          { label: "Settled",   value: settledCount,  color: "text-blue-700",    bg: "bg-blue-50 border-blue-200" },
+          { label: "Est. Value", value: `$${totalValue >= 1000 ? `${(totalValue / 1000).toFixed(1)}k` : totalValue.toLocaleString()}`, color: "text-violet-700", bg: "bg-violet-50 border-violet-200" },
+        ].map(({ label, value, color, bg }) => (
+          <div key={label} className={cn("border rounded-xl px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between", bg)}>
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{label}</span>
+            <span className={cn("text-base sm:text-lg font-black tabular-nums", color)}>{loading ? "—" : value}</span>
+          </div>
+        ))}
+      </div>
 
-        <div className="p-5 space-y-4">
-          {/* Shipment number dropdown */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Shipment Number</label>
-            <select
-              value={selectedShipmentId}
-              onChange={(e) => { setSelectedShipmentId(e.target.value); setTab("all"); }}
-              className="w-full border rounded-xl px-3 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-colors"
-              disabled={loading}
-            >
-              <option value="">All Shipments — {books.length} books total</option>
-              {shipments.map((s) => (
-                <option key={s.shipmentId} value={s.shipmentId}>
-                  {s.shipmentNum ? `#${s.shipmentNum}` : "(no number)"}
-                  {s.date ? ` · ${fmtDate(s.date)}` : ` · ${fmtDate(s.createdAt)}`}
-                  {s.totalBooks != null ? ` · ${s.totalBooks} books` : ""}
-                  {s.orderNumber ? ` · Order ${s.orderNumber}` : ""}
-                </option>
-              ))}
-            </select>
+      {/* ── Filters bar ─────────────────────────────────────────────────────── */}
+      <div className="border rounded-2xl bg-card shadow-sm p-3 sm:p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
+          {/* Search */}
+          <div className="relative flex-1 min-w-0">
+            <MagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search game, pack, or game ID…"
+              className="w-full border rounded-xl pl-10 pr-9 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition" />
+            {query && (
+              <button onClick={() => setQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                <X className="size-3.5" />
+              </button>
+            )}
           </div>
 
-          {/* Selected shipment detail */}
-          {selectedShipment ? (
-            <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
-              <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div className="space-y-0.5">
-                  <p className="text-sm font-semibold">
-                    Shipment {selectedShipment.shipmentNum ? `#${selectedShipment.shipmentNum}` : "(no number)"}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {fmtDate(selectedShipment.date ?? selectedShipment.createdAt)}
-                    {selectedShipment.orderNumber && ` · Order #${selectedShipment.orderNumber}`}
-                  </p>
-                </div>
-                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-primary/10 text-primary">
-                  {booksInView.length} books loaded
-                </span>
-              </div>
+          {/* Shipment select */}
+          <select value={selectedShipmentId}
+            onChange={(e) => { setSelectedShipmentId(e.target.value); setTab("all"); }}
+            disabled={loading}
+            className="border rounded-xl px-3 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 sm:w-64 shrink-0 font-medium">
+            <option value="">All Shipments ({books.length} books)</option>
+            {shipments.map((s) => (
+              <option key={s.shipmentId} value={s.shipmentId}>
+                {s.shipmentNum ? `#${s.shipmentNum}` : "(no number)"}
+                {s.totalBooks != null ? ` · ${s.totalBooks} books` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
 
-              {/* Quick stats for this shipment */}
-              {shipmentStats && (
-                <div className="grid grid-cols-3 gap-2 pt-1 border-t">
-                  <div className="text-center">
-                    <p className="text-lg font-black text-emerald-600">{shipmentStats.active}</p>
-                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">Active</p>
-                  </div>
-                  <div className="text-center border-x">
-                    <p className="text-lg font-black text-foreground">{shipmentStats.inactive}</p>
-                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">Inactive</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-lg font-black text-blue-600">{shipmentStats.settled}</p>
-                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">Settled</p>
-                  </div>
-                </div>
-              )}
-
-              {selectedShipment.notes && (
-                <p className="text-xs text-muted-foreground italic">"{selectedShipment.notes}"</p>
-              )}
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Choose a shipment above to view and manage the books within it, or leave as "All Shipments" to see everything.
+        {/* Selected shipment chip */}
+        {selectedShipment && (
+          <div className="flex items-center gap-2 px-3 py-2 bg-primary/5 border border-primary/20 rounded-xl">
+            <Package className="size-3.5 text-primary shrink-0" />
+            <p className="text-xs font-medium flex-1 truncate">
+              <span className="font-bold">Shipment {selectedShipment.shipmentNum ?? "(no #)"}</span>
+              <span className="text-muted-foreground"> · {fmtDate(selectedShipment.date ?? selectedShipment.createdAt)}</span>
+              {selectedShipment.orderNumber && <span className="text-muted-foreground"> · Order {selectedShipment.orderNumber}</span>}
             </p>
-          )}
+            <button onClick={() => setSelectedShipmentId("")} className="shrink-0 text-xs text-primary hover:text-primary/80 font-semibold flex items-center gap-1">
+              <X className="size-3" /> Clear
+            </button>
+          </div>
+        )}
+
+        {/* Price tier chips + view toggle */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1 shrink-0">
+            <Funnel className="size-3" /> Price:
+          </span>
+          {(["all", 1, 2, 5, 10, 20, 30, 50] as const).map((p) => {
+            const isActive = priceFilter === p;
+            return (
+              <button key={p} onClick={() => setPriceFilter(p)}
+                className={cn(
+                  "px-2.5 py-1 text-xs font-bold rounded-full border transition-all tabular-nums",
+                  isActive
+                    ? "text-white border-transparent shadow-sm"
+                    : "bg-background text-muted-foreground border-border hover:border-foreground/40"
+                )}
+                style={isActive && p !== "all" ? { background: TIER_HEX[p] } : isActive ? { background: "#0f172a" } : undefined}>
+                {p === "all" ? "All" : `$${p}`}
+              </button>
+            );
+          })}
+          <div className="ml-auto flex items-center gap-0.5 border rounded-lg bg-muted/40 p-0.5 hidden sm:flex">
+            {(["table", "cards"] as const).map((v) => (
+              <button key={v} onClick={() => setView(v)}
+                className={cn("px-2.5 py-1 text-[11px] font-semibold rounded transition-all capitalize",
+                  view === v ? "bg-background shadow-sm" : "text-muted-foreground")}>
+                {v}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* ── Tabs ──────────────────────────────────────────────────────────────── */}
-      <div className="flex gap-1 border-b overflow-x-auto">
+      <div className="flex gap-1 border-b overflow-x-auto -mx-1 px-1">
         {TABS.map((t) => {
           const count = t.value === "all"
             ? booksInView.length
@@ -570,26 +596,103 @@ export default function BooksPage() {
           return (
             <button key={t.value} onClick={() => setTab(t.value)}
               className={cn(
-                "px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap",
+                "px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition-colors whitespace-nowrap",
                 tab === t.value
                   ? "border-primary text-foreground"
                   : "border-transparent text-muted-foreground hover:text-foreground"
               )}>
               {t.label}
-              <span className="ml-1.5 text-xs text-muted-foreground">({count})</span>
+              <span className={cn("ml-1.5 text-xs tabular-nums", tab === t.value ? "text-primary font-bold" : "text-muted-foreground")}>
+                ({count})
+              </span>
             </button>
           );
         })}
       </div>
 
-      {/* ── Table ─────────────────────────────────────────────────────────────── */}
-      <div className="border rounded-2xl overflow-hidden shadow-sm">
+      {/* ── Mobile cards (always on small screens, optional on large) ────────── */}
+      <div className={cn("space-y-2 sm:hidden", view === "cards" && "sm:block sm:space-y-3")}>
+        {loading
+          ? Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="h-24 border rounded-2xl bg-muted/40 animate-pulse" />
+            ))
+          : visible.length === 0 ? (
+            <div className="text-center py-12 border border-dashed rounded-2xl space-y-2">
+              <BookOpen className="size-10 text-muted-foreground/30 mx-auto" />
+              <p className="text-sm text-muted-foreground">No books match your filters</p>
+              {(query || priceFilter !== "all" || selectedShipmentId) && (
+                <button onClick={() => { setQuery(""); setPriceFilter("all"); setSelectedShipmentId(""); }}
+                  className="text-xs text-primary hover:underline font-semibold">
+                  Clear all filters
+                </button>
+              )}
+            </div>
+          ) : visible.map((b) => (
+            <div key={b.bookId} className="border rounded-2xl bg-card p-3 sm:p-4 shadow-sm hover:shadow-md transition-all">
+              <div className="flex items-start justify-between gap-3 mb-2.5">
+                <div className="flex items-start gap-3 min-w-0 flex-1">
+                  <div className="size-10 rounded-xl flex items-center justify-center text-xs font-black shrink-0"
+                    style={{ background: `${TIER_HEX[b.price]}1a`, color: TIER_HEX[b.price] }}>
+                    ${b.price}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-sm truncate">{b.gameName}</p>
+                    <p className="text-xs text-muted-foreground font-mono">Pack {b.pack} · {b.gameId}</p>
+                    {b.slot && <p className="text-xs text-muted-foreground mt-0.5">Slot #{b.slot}</p>}
+                  </div>
+                </div>
+                <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold capitalize shrink-0", STATUS_STYLE[b.status])}>
+                  {b.status}
+                </span>
+              </div>
+
+              {(b.activatedAt || b.settledAt) && (
+                <div className="flex items-center gap-3 text-[11px] text-muted-foreground mb-2.5">
+                  {b.activatedAt && <span>Activated {fmt(b.activatedAt)}</span>}
+                  {b.settledAt && <span>Settled {fmt(b.settledAt)}</span>}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                {updating === b.bookId ? (
+                  <span className="text-xs text-muted-foreground inline-flex items-center gap-2 py-1.5">
+                    <span className="size-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                    Updating…
+                  </span>
+                ) : b.status === "inactive" ? (
+                  <button onClick={() => openModal(b, "activate")}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors font-semibold inline-flex items-center gap-1.5">
+                    <FileMagnifyingGlass className="size-3.5" /> Activate
+                  </button>
+                ) : b.status === "active" ? (
+                  <>
+                    <button onClick={() => openModal(b, "deactivate")}
+                      className="text-xs px-3 py-1.5 rounded-lg border hover:bg-muted transition-colors font-semibold">
+                      Deactivate
+                    </button>
+                    <button onClick={() => openModal(b, "settle")}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors font-semibold inline-flex items-center gap-1.5">
+                      <FileMagnifyingGlass className="size-3.5" /> Settle
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5 py-1.5">
+                    <CheckCircle weight="fill" className="size-3.5 text-blue-500" /> Settled — read only
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+      </div>
+
+      {/* ── Desktop table ─────────────────────────────────────────────────────── */}
+      <div className={cn("hidden sm:block border rounded-2xl overflow-hidden shadow-sm bg-card", view === "cards" && "sm:hidden")}>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[640px]">
+          <table className="w-full text-sm min-w-[720px]">
             <thead className="bg-muted/50 border-b">
               <tr>
                 {["Game", "Pack", "Price", "Slot", "Status", "Activated", "Settled", "Actions"].map((h) => (
-                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground whitespace-nowrap">{h}</th>
+                  <th key={h} className="text-left px-4 py-3 text-[11px] font-bold text-muted-foreground uppercase tracking-wider whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -603,14 +706,19 @@ export default function BooksPage() {
                 : visible.map((b) => (
                     <tr key={b.bookId} className="hover:bg-muted/30 transition-colors">
                       <td className="px-4 py-3">
-                        <p className="font-medium">{b.gameName}</p>
+                        <p className="font-semibold">{b.gameName}</p>
                         <p className="text-xs text-muted-foreground font-mono">{b.gameId}</p>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs">{b.pack}</td>
-                      <td className="px-4 py-3">${b.price}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{b.slot ?? "—"}</td>
                       <td className="px-4 py-3">
-                        <span className={cn("px-2.5 py-0.5 rounded-full text-xs font-medium capitalize", STATUS_STYLE[b.status])}>
+                        <span className="px-2 py-0.5 rounded-full text-xs font-bold tabular-nums"
+                          style={{ background: `${TIER_HEX[b.price]}1a`, color: TIER_HEX[b.price] }}>
+                          ${b.price}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground tabular-nums">{b.slot ?? "—"}</td>
+                      <td className="px-4 py-3">
+                        <span className={cn("px-2.5 py-0.5 rounded-full text-xs font-bold capitalize", STATUS_STYLE[b.status])}>
                           {b.status}
                         </span>
                       </td>
@@ -623,26 +731,26 @@ export default function BooksPage() {
                           )}
                           {updating !== b.bookId && b.status === "inactive" && (
                             <button onClick={() => openModal(b, "activate")}
-                              className="text-xs px-3 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors font-medium inline-flex items-center gap-1">
-                              <FileMagnifyingGlass className="size-3" />
-                              Activate
+                              className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors font-semibold inline-flex items-center gap-1">
+                              <FileMagnifyingGlass className="size-3" /> Activate
                             </button>
                           )}
                           {updating !== b.bookId && b.status === "active" && (
                             <>
                               <button onClick={() => openModal(b, "deactivate")}
-                                className="text-xs px-3 py-1 rounded-lg border hover:bg-accent transition-colors font-medium">
+                                className="text-xs px-3 py-1.5 rounded-lg border hover:bg-muted transition-colors font-semibold">
                                 Deactivate
                               </button>
                               <button onClick={() => openModal(b, "settle")}
-                                className="text-xs px-3 py-1 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors font-medium inline-flex items-center gap-1">
-                                <FileMagnifyingGlass className="size-3" />
-                                Settle
+                                className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors font-semibold inline-flex items-center gap-1">
+                                <FileMagnifyingGlass className="size-3" /> Settle
                               </button>
                             </>
                           )}
                           {updating !== b.bookId && b.status === "settled" && (
-                            <span className="text-xs text-muted-foreground">Completed</span>
+                            <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+                              <CheckCircle weight="fill" className="size-3 text-blue-500" /> Done
+                            </span>
                           )}
                         </div>
                       </td>
@@ -654,12 +762,12 @@ export default function BooksPage() {
         </div>
         {!loading && visible.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12 space-y-2 text-center">
-            <p className="text-sm text-muted-foreground">No books in this category.</p>
-            {selectedShipmentId && (
-              <button
-                onClick={() => setSelectedShipmentId("")}
-                className="text-xs text-primary hover:underline">
-                View all shipments
+            <BookOpen className="size-10 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No books match your filters.</p>
+            {(query || priceFilter !== "all" || selectedShipmentId) && (
+              <button onClick={() => { setQuery(""); setPriceFilter("all"); setSelectedShipmentId(""); }}
+                className="text-xs text-primary hover:underline font-semibold">
+                Clear all filters
               </button>
             )}
           </div>

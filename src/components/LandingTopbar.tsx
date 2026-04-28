@@ -11,7 +11,7 @@ const LINKS = [
   { label: "Pricing",      href: "#pricing"      },
 ];
 
-export function MarketingNav({ dark = false }: { dark?: boolean }) {
+export function MarketingNav({ dark = false, ivory = false }: { dark?: boolean; ivory?: boolean }) {
   const [open,     setOpen]     = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -20,6 +20,95 @@ export function MarketingNav({ dark = false }: { dark?: boolean }) {
     window.addEventListener("scroll", fn, { passive: true });
     return () => window.removeEventListener("scroll", fn);
   }, []);
+
+  if (ivory) {
+    return (
+      <header
+        className="sticky top-0 z-50 transition-all duration-300"
+        style={{
+          background:   scrolled ? "rgba(248,245,239,0.92)" : "#F8F5EF",
+          borderBottom: scrolled ? "1px solid rgba(43,92,63,0.1)" : "1px solid rgba(43,92,63,0.08)",
+          backdropFilter: scrolled ? "blur(16px) saturate(1.4)" : "none",
+        }}
+      >
+        <div className="max-w-6xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-6">
+          <Link href="/" className="flex items-center gap-2.5 font-bold text-[15px] shrink-0" style={{ color: "#2B5C3F" }}>
+            <div className="size-8 rounded-xl flex items-center justify-center shadow-sm"
+              style={{ background: "linear-gradient(135deg,#2B5C3F,#3A7A52)" }}>
+              <ShieldCheck weight="fill" className="size-4 text-white" />
+            </div>
+            LottoGuard
+          </Link>
+
+          <nav className="hidden md:flex items-center gap-0.5 flex-1 justify-center">
+            {LINKS.map((l) => (
+              <a key={l.label} href={l.href}
+                className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
+                style={{ color: "#6B6356" }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#2B5C3F")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "#6B6356")}
+              >
+                {l.label}
+              </a>
+            ))}
+          </nav>
+
+          <div className="hidden md:flex items-center gap-2 shrink-0">
+            <Link href="/login"
+              className="text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+              style={{ color: "#6B6356" }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = "#2B5C3F")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "#6B6356")}
+            >
+              Sign in
+            </Link>
+            <Link href="/owner/signup"
+              className="text-sm font-semibold px-4 py-2 rounded-xl transition-all hover:scale-[1.03] hover:shadow-md"
+              style={{ background: "linear-gradient(135deg,#2B5C3F,#3A7A52)", color: "#fff", boxShadow: "0 2px 12px rgba(43,92,63,0.25)" }}
+            >
+              Get started free
+            </Link>
+          </div>
+
+          <button onClick={() => setOpen((v) => !v)}
+            className="md:hidden p-2 rounded-xl transition-colors"
+            style={{ color: "#6B6356" }}
+          >
+            {open ? <X className="size-5" /> : <List className="size-5" />}
+          </button>
+        </div>
+
+        {open && (
+          <div className="md:hidden px-5 py-3 space-y-1 border-t"
+            style={{ background: "rgba(248,245,239,0.98)", borderColor: "rgba(43,92,63,0.1)", backdropFilter: "blur(16px)" }}
+          >
+            {LINKS.map((l) => (
+              <a key={l.label} href={l.href} onClick={() => setOpen(false)}
+                className="block px-3 py-2.5 text-sm font-medium rounded-xl transition-colors"
+                style={{ color: "#6B6356" }}
+              >
+                {l.label}
+              </a>
+            ))}
+            <div className="pt-3 flex flex-col gap-2 border-t mt-2" style={{ borderColor: "rgba(43,92,63,0.1)" }}>
+              <Link href="/login" onClick={() => setOpen(false)}
+                className="text-sm text-center rounded-xl py-2.5 font-medium border transition-colors"
+                style={{ color: "#6B6356", borderColor: "rgba(43,92,63,0.15)" }}
+              >
+                Sign in
+              </Link>
+              <Link href="/owner/signup" onClick={() => setOpen(false)}
+                className="text-sm text-center rounded-xl py-2.5 font-semibold"
+                style={{ background: "linear-gradient(135deg,#2B5C3F,#3A7A52)", color: "#fff" }}
+              >
+                Get started free
+              </Link>
+            </div>
+          </div>
+        )}
+      </header>
+    );
+  }
 
   if (dark) {
     return (
