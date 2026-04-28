@@ -70,6 +70,7 @@ const TYPE_LABEL: Record<string, string> = {
   slot_updated_by_employee:    "Slot Updated",
   shift_discrepancy_over:      "Cash Discrepancy — Over",
   shift_discrepancy_short:     "Cash Discrepancy — Short",
+  book_action_failed:          "Book Action Failed",
 };
 
 function fmtDateTime(iso: string) {
@@ -125,6 +126,18 @@ export default function ErrorLogPage() {
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ all: true }),
     });
+  }
+
+  async function markSeverityRead(severity: Severity) {
+    const targets = notifs.filter((n) => n.severity === severity && !n.read);
+    setNotifs((prev) => prev.map((n) => n.severity === severity ? { ...n, read: true } : n));
+    await Promise.all(targets.map((n) =>
+      fetch("/api/notifications", {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ sk: n.SK }),
+      })
+    ));
   }
 
   function toggleExpand(sk: string) {
@@ -186,11 +199,45 @@ export default function ErrorLogPage() {
         </div>
       </div>
 
+      {/* Severity summary cards */}
+      {!loading && notifs.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {(["emergency", "important", "warning", "info"] as Severity[]).map((s) => {
+            const cfg   = SEVERITY_CFG[s];
+            const count = counts[s];
+            const unreadOfSeverity = notifs.filter((n) => n.severity === s && !n.read).length;
+            return (
+              <div key={s} className={cn("rounded-2xl border p-4 space-y-2", cfg.row)}>
+                <div className="flex items-center justify-between">
+                  <span className={cn("text-xs font-semibold px-2 py-0.5 rounded-full border", cfg.badge)}>
+                    {cfg.label}
+                  </span>
+                  {unreadOfSeverity > 0 && (
+                    <button
+                      onClick={() => markSeverityRead(s)}
+                      className="text-[10px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2">
+                      Clear {unreadOfSeverity}
+                    </button>
+                  )}
+                </div>
+                <p className="text-2xl font-black">{count}</p>
+                <p className="text-xs text-muted-foreground">
+                  {unreadOfSeverity > 0 ? `${unreadOfSeverity} unread` : "All read"}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Filter tabs */}
       <div className="flex gap-1 flex-wrap border-b pb-0">
         {(["all", "emergency", "important", "warning", "info"] as Filter[]).map((f) => {
-          const cfg = f === "all" ? null : SEVERITY_CFG[f as Severity];
+          const cfg    = f === "all" ? null : SEVERITY_CFG[f as Severity];
           const active = filter === f;
+          const unreadCount = f === "all"
+            ? notifs.filter((n) => !n.read).length
+            : notifs.filter((n) => n.severity === f && !n.read).length;
           return (
             <button
               key={f}
@@ -210,6 +257,9 @@ export default function ErrorLogPage() {
               )}>
                 {counts[f]}
               </span>
+              {unreadCount > 0 && !active && (
+                <span className={cn("size-1.5 rounded-full shrink-0", f === "all" ? "bg-primary" : SEVERITY_CFG[f as Severity].dot)} />
+              )}
             </button>
           );
         })}

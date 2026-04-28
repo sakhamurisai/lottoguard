@@ -4,14 +4,37 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowClockwise, UploadSimple, X, CheckCircle,
   Warning, Spinner, FileMagnifyingGlass, Camera, Upload, ArrowRight,
+  Package,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 type Status = "inactive" | "active" | "settled";
+
 type Book = {
-  bookId: string; gameId: string; gameName: string; pack: string; price: number;
-  slot: number | null; status: Status; activatedAt: string | null; settledAt: string | null;
+  bookId:      string;
+  gameId:      string;
+  gameName:    string;
+  pack:        string;
+  price:       number;
+  slot:        number | null;
+  status:      Status;
+  activatedAt: string | null;
+  settledAt:   string | null;
+  shipmentId?: string | null;
 };
+
+type Shipment = {
+  shipmentId:   string;
+  shipmentNum?: string;
+  orderNumber?: string;
+  date?:        string;
+  totalBooks?:  number;
+  notes?:       string;
+  createdAt:    string;
+};
+
 type ActionType = "activate" | "deactivate" | "settle";
 
 const TABS: { label: string; value: Status | "all" }[] = [
@@ -44,6 +67,12 @@ function fmt(iso: string | null) {
   return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function fmtDate(iso: string | undefined) {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
+  catch { return iso; }
+}
+
 // ── Receipt scan modal ────────────────────────────────────────────────────────
 
 type ScanResult = {
@@ -60,17 +89,17 @@ type ModalState =
   | { type: "confirming" };
 
 interface ReceiptModalProps {
-  book: Book;
-  action: ActionType;
+  book:      Book;
+  action:    ActionType;
   onConfirm: () => void;
-  onClose: () => void;
+  onClose:   () => void;
 }
 
 function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
   const cameraRef  = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
-  const [state,    setState]  = useState<ModalState>({ type: "idle" });
-  const [photos,   setPhotos] = useState<{ file: File; preview: string }[]>([]);
+  const [state,    setState]    = useState<ModalState>({ type: "idle" });
+  const [photos,   setPhotos]   = useState<{ file: File; preview: string }[]>([]);
   const [dragOver, setDragOver] = useState(false);
 
   function addFiles(fileList: FileList | null) {
@@ -173,7 +202,6 @@ function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
                 {isIdle ? "Upload terminal receipt (optional)" : "Re-scan receipt"}
               </p>
 
-              {/* Photo grid */}
               {photos.length > 0 && (
                 <div className="grid grid-cols-4 gap-2">
                   {photos.map((p, i) => (
@@ -323,21 +351,23 @@ function ReceiptModal({ book, action, onConfirm, onClose }: ReceiptModalProps) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function BooksPage() {
-  const [books,   setBooks]   = useState<Book[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [tab,     setTab]     = useState<Status | "all">("all");
-  const [updating, setUpdating] = useState<string | null>(null);
+  const [books,     setBooks]     = useState<Book[]>([]);
+  const [shipments, setShipments] = useState<Shipment[]>([]);
+  const [loading,   setLoading]   = useState(true);
+  const [tab,       setTab]       = useState<Status | "all">("all");
+  const [updating,  setUpdating]  = useState<string | null>(null);
+  const [selectedShipmentId, setSelectedShipmentId] = useState<string>("");
 
-  // Modal state
   const [modal, setModal] = useState<{ book: Book; action: ActionType } | null>(null);
-
-  // Error log
-  const [errorLog, setErrorLog] = useState<{ bookId: string; gameName: string; msg: string }[]>([]);
 
   async function load() {
     setLoading(true);
-    const r = await fetch("/api/inventory");
-    if (r.ok) setBooks((await r.json()).books as Book[]);
+    const [booksRes, shipmentsRes] = await Promise.all([
+      fetch("/api/inventory"),
+      fetch("/api/shipments"),
+    ]);
+    if (booksRes.ok)     setBooks((await booksRes.json()).books as Book[]);
+    if (shipmentsRes.ok) setShipments((await shipmentsRes.json()).shipments as Shipment[]);
     setLoading(false);
   }
 
@@ -361,21 +391,28 @@ export default function BooksPage() {
     } else {
       const data = await r.json() as { error?: string };
       const book = books.find((b) => b.bookId === bookId);
-      if (book) setErrorLog((prev) => [...prev, { bookId, gameName: book.gameName, msg: data.error ?? "Update failed" }]);
+      // Persist failure to the error log
+      fetch("/api/notifications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type:     "book_action_failed",
+          severity: "important",
+          message:  `Failed to ${status === "active" ? "activate" : status === "settled" ? "settle" : "deactivate"} "${book?.gameName ?? "book"}" (Pack ${book?.pack ?? bookId}): ${data.error ?? "Update failed"}`,
+          detail:   { bookId, gameName: book?.gameName, pack: book?.pack, targetStatus: status, error: data.error ?? "Update failed" },
+        }),
+      }).catch(() => {});
     }
     setUpdating(null);
     setModal(null);
   }
 
-  // Bulk actions
   async function bulkUpdate(fromStatus: Status, toStatus: Status) {
-    const targets = books.filter((b) => b.status === fromStatus);
+    const targets = booksInView.filter((b) => b.status === fromStatus);
     for (const b of targets) await updateStatus(b.bookId, toStatus);
   }
 
-  function openModal(book: Book, action: ActionType) {
-    setModal({ book, action });
-  }
+  function openModal(book: Book, action: ActionType) { setModal({ book, action }); }
 
   function handleConfirm() {
     if (!modal) return;
@@ -385,9 +422,23 @@ export default function BooksPage() {
     updateStatus(modal.book.bookId, status);
   }
 
-  const visible = tab === "all" ? books : books.filter((b) => b.status === tab);
-  const inactiveCount = books.filter((b) => b.status === "inactive").length;
-  const activeCount   = books.filter((b) => b.status === "active").length;
+  // ── Derived ──────────────────────────────────────────────────────────────────
+
+  const booksInView = selectedShipmentId
+    ? books.filter((b) => b.shipmentId === selectedShipmentId)
+    : books;
+
+  const visible       = tab === "all" ? booksInView : booksInView.filter((b) => b.status === tab);
+  const inactiveCount = booksInView.filter((b) => b.status === "inactive").length;
+  const activeCount   = booksInView.filter((b) => b.status === "active").length;
+  const selectedShipment = shipments.find((s) => s.shipmentId === selectedShipmentId);
+
+  // Shipment stats for the selected item
+  const shipmentStats = selectedShipment ? {
+    active:   booksInView.filter((b) => b.status === "active").length,
+    inactive: booksInView.filter((b) => b.status === "inactive").length,
+    settled:  booksInView.filter((b) => b.status === "settled").length,
+  } : null;
 
   return (
     <div className="p-6 space-y-5">
@@ -402,7 +453,10 @@ export default function BooksPage() {
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <h1 className="text-xl font-semibold tracking-tight">Activate / Deactivate / Settle</h1>
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Activate / Settle</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Select a shipment to manage its books</p>
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           {inactiveCount > 0 && (
             <button onClick={() => bulkUpdate("inactive", "active")} disabled={!!updating}
@@ -422,30 +476,105 @@ export default function BooksPage() {
         </div>
       </div>
 
-      {/* Error log */}
-      {errorLog.length > 0 && (
-        <div className="border border-destructive/30 rounded-2xl p-4 space-y-2 bg-destructive/5">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold text-destructive uppercase tracking-widest">Error Log</p>
-            <button onClick={() => setErrorLog([])} className="text-xs text-muted-foreground hover:text-foreground">Clear</button>
-          </div>
-          {errorLog.map((e, i) => (
-            <div key={i} className="flex items-start gap-2 text-sm text-destructive">
-              <X className="size-3.5 shrink-0 mt-0.5" />
-              <span><span className="font-medium">{e.gameName}</span>: {e.msg}</span>
-            </div>
-          ))}
+      {/* ── Shipment Selector ─────────────────────────────────────────────────── */}
+      <div className="border rounded-2xl overflow-hidden shadow-sm">
+        {/* Selector header */}
+        <div className="flex items-center gap-2.5 px-5 py-4 border-b bg-muted/30">
+          <Package className="size-4 text-muted-foreground shrink-0" />
+          <h2 className="text-sm font-semibold flex-1">Shipment</h2>
+          {selectedShipmentId && (
+            <button
+              onClick={() => { setSelectedShipmentId(""); setTab("all"); }}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+              <X className="size-3.5" /> Clear
+            </button>
+          )}
         </div>
-      )}
 
-      {/* Tabs */}
+        <div className="p-5 space-y-4">
+          {/* Shipment number dropdown */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Shipment Number</label>
+            <select
+              value={selectedShipmentId}
+              onChange={(e) => { setSelectedShipmentId(e.target.value); setTab("all"); }}
+              className="w-full border rounded-xl px-3 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-colors"
+              disabled={loading}
+            >
+              <option value="">All Shipments — {books.length} books total</option>
+              {shipments.map((s) => (
+                <option key={s.shipmentId} value={s.shipmentId}>
+                  {s.shipmentNum ? `#${s.shipmentNum}` : "(no number)"}
+                  {s.date ? ` · ${fmtDate(s.date)}` : ` · ${fmtDate(s.createdAt)}`}
+                  {s.totalBooks != null ? ` · ${s.totalBooks} books` : ""}
+                  {s.orderNumber ? ` · Order ${s.orderNumber}` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Selected shipment detail */}
+          {selectedShipment ? (
+            <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="space-y-0.5">
+                  <p className="text-sm font-semibold">
+                    Shipment {selectedShipment.shipmentNum ? `#${selectedShipment.shipmentNum}` : "(no number)"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {fmtDate(selectedShipment.date ?? selectedShipment.createdAt)}
+                    {selectedShipment.orderNumber && ` · Order #${selectedShipment.orderNumber}`}
+                  </p>
+                </div>
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-primary/10 text-primary">
+                  {booksInView.length} books loaded
+                </span>
+              </div>
+
+              {/* Quick stats for this shipment */}
+              {shipmentStats && (
+                <div className="grid grid-cols-3 gap-2 pt-1 border-t">
+                  <div className="text-center">
+                    <p className="text-lg font-black text-emerald-600">{shipmentStats.active}</p>
+                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">Active</p>
+                  </div>
+                  <div className="text-center border-x">
+                    <p className="text-lg font-black text-foreground">{shipmentStats.inactive}</p>
+                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">Inactive</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-lg font-black text-blue-600">{shipmentStats.settled}</p>
+                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">Settled</p>
+                  </div>
+                </div>
+              )}
+
+              {selectedShipment.notes && (
+                <p className="text-xs text-muted-foreground italic">"{selectedShipment.notes}"</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Choose a shipment above to view and manage the books within it, or leave as "All Shipments" to see everything.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Tabs ──────────────────────────────────────────────────────────────── */}
       <div className="flex gap-1 border-b overflow-x-auto">
         {TABS.map((t) => {
-          const count = t.value === "all" ? books.length : books.filter((b) => b.status === t.value).length;
+          const count = t.value === "all"
+            ? booksInView.length
+            : booksInView.filter((b) => b.status === t.value).length;
           return (
             <button key={t.value} onClick={() => setTab(t.value)}
-              className={cn("px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap",
-                tab === t.value ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
+              className={cn(
+                "px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap",
+                tab === t.value
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              )}>
               {t.label}
               <span className="ml-1.5 text-xs text-muted-foreground">({count})</span>
             </button>
@@ -453,7 +582,7 @@ export default function BooksPage() {
         })}
       </div>
 
-      {/* Table */}
+      {/* ── Table ─────────────────────────────────────────────────────────────── */}
       <div className="border rounded-2xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[640px]">
@@ -524,7 +653,16 @@ export default function BooksPage() {
           </table>
         </div>
         {!loading && visible.length === 0 && (
-          <p className="text-center text-sm text-muted-foreground py-10">No books in this category.</p>
+          <div className="flex flex-col items-center justify-center py-12 space-y-2 text-center">
+            <p className="text-sm text-muted-foreground">No books in this category.</p>
+            {selectedShipmentId && (
+              <button
+                onClick={() => setSelectedShipmentId("")}
+                className="text-xs text-primary hover:underline">
+                View all shipments
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

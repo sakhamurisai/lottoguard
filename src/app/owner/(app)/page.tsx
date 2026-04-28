@@ -9,6 +9,8 @@ import {
   Bell,
   SealWarning,
   X,
+  CurrencyDollar,
+  ChartBar,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/components/auth-provider";
 import { cn } from "@/lib/utils";
@@ -118,18 +120,69 @@ export default function OwnerDashboard() {
   const emergencyNotifs = notifs.filter((n) => n.severity === "emergency" && !ackedNotifs.has(n.SK));
   const importantNotifs = notifs.filter((n) => n.severity === "important" && !n.read && !ackedNotifs.has(n.SK));
   const unreadCount     = notifs.filter((n) => !n.read && !ackedNotifs.has(n.SK)).length;
-  const s        = data?.summary;
+  const s = data?.summary;
 
   // Bar chart helpers
   const maxSold   = Math.max(1, ...Object.values(data?.soldByTier  ?? {}));
   const maxBooks  = Math.max(1, ...Object.values(data?.booksByTier ?? {}).map((t) => t.total));
   const trendMax  = Math.max(1, ...(data?.trend ?? []).map((t) => t.sold));
 
+  // Derived metrics
+  const estimatedRevenue = Object.entries(data?.soldByTier ?? {})
+    .reduce((sum, [price, sold]) => sum + Number(price) * sold, 0);
+  const slotFillPct = s && s.totalSlots > 0
+    ? Math.round((s.filledSlots / s.totalSlots) * 100)
+    : null;
+
+  // Today vs yesterday tickets
+  const trend      = data?.trend ?? [];
+  const todaySold  = trend[trend.length - 1]?.sold ?? 0;
+  const yestSold   = trend[trend.length - 2]?.sold ?? 0;
+  const trendDelta = yestSold > 0 ? Math.round(((todaySold - yestSold) / yestSold) * 100) : null;
+
   const STAT_CARDS = s ? [
-    { label: "Tickets Sold",   value: s.totalTicketsSold.toLocaleString(), icon: Ticket,   color: "text-primary",        desc: "across all shifts" },
-    { label: "Active Books",   value: s.activeBooks,                        icon: BookOpen, color: "text-emerald-600",    desc: `${s.settledBooks} settled` },
-    { label: "Total Books",    value: s.totalBooks,                         icon: Package,  color: "text-violet-600",     desc: "in inventory" },
-    { label: "Active Staff",   value: `${s.activeEmployees}/${s.totalEmployees}`, icon: Users, color: "text-blue-600", desc: "employees" },
+    {
+      label: "Revenue Est.",
+      value: `$${estimatedRevenue >= 1000 ? `${(estimatedRevenue / 1000).toFixed(1)}k` : estimatedRevenue.toLocaleString()}`,
+      icon: CurrencyDollar,
+      color: "text-emerald-600",
+      desc: "from tickets sold",
+      sub: null,
+    },
+    {
+      label: "Tickets Sold",
+      value: s.totalTicketsSold.toLocaleString(),
+      icon: Ticket,
+      color: "text-primary",
+      desc: "across all shifts",
+      sub: trendDelta !== null
+        ? { text: `${trendDelta >= 0 ? "+" : ""}${trendDelta}% vs yesterday`, positive: trendDelta >= 0 }
+        : null,
+    },
+    {
+      label: "Active Books",
+      value: s.activeBooks,
+      icon: BookOpen,
+      color: "text-violet-600",
+      desc: `${s.settledBooks} settled · ${s.totalBooks - s.activeBooks - s.settledBooks} stock`,
+      sub: null,
+    },
+    {
+      label: "Slot Utilization",
+      value: slotFillPct !== null ? `${slotFillPct}%` : "—",
+      icon: ChartBar,
+      color: slotFillPct !== null && slotFillPct < 50 ? "text-amber-500" : "text-blue-600",
+      desc: `${s.filledSlots} of ${s.totalSlots} slots filled`,
+      sub: null,
+    },
+    {
+      label: "Active Staff",
+      value: `${s.activeEmployees}/${s.totalEmployees}`,
+      icon: Users,
+      color: "text-blue-600",
+      desc: "employees",
+      sub: null,
+    },
   ] : [];
 
   return (
@@ -246,16 +299,16 @@ export default function OwnerDashboard() {
       )}
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         {loading
-          ? Array.from({ length: 4 }).map((_, i) => (
+          ? Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="border rounded-2xl p-4 space-y-3">
                 <div className="h-3 bg-muted rounded animate-pulse w-20" />
                 <div className="h-8 bg-muted rounded animate-pulse w-12" />
                 <div className="h-3 bg-muted rounded animate-pulse w-16" />
               </div>
             ))
-          : STAT_CARDS.map(({ label, value, icon: Icon, color, desc }) => (
+          : STAT_CARDS.map(({ label, value, icon: Icon, color, desc, sub }) => (
               <div key={label} className="border rounded-2xl p-4 space-y-2 shadow-sm hover:shadow-md transition-shadow">
                 <div className="flex items-center justify-between">
                   <p className="text-xs text-muted-foreground font-medium">{label}</p>
@@ -263,6 +316,11 @@ export default function OwnerDashboard() {
                 </div>
                 <p className="text-3xl font-black tracking-tight">{value}</p>
                 <p className="text-xs text-muted-foreground">{desc}</p>
+                {sub && (
+                  <p className={cn("text-[11px] font-semibold", sub.positive ? "text-emerald-600" : "text-red-500")}>
+                    {sub.text}
+                  </p>
+                )}
               </div>
             ))
         }
@@ -326,7 +384,12 @@ export default function OwnerDashboard() {
         <div className="border rounded-2xl p-5 space-y-4 shadow-sm">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-sm">7-Day Trend</h2>
-            <span className="text-xs text-muted-foreground">tickets/day</span>
+            {!loading && (
+              <div className="text-right">
+                <p className="text-sm font-bold">{todaySold.toLocaleString()}</p>
+                <p className="text-[10px] text-muted-foreground">today</p>
+              </div>
+            )}
           </div>
           {loading ? (
             <div className="flex items-end gap-1.5 h-28">
@@ -353,9 +416,20 @@ export default function OwnerDashboard() {
               </div>
               <div className="flex gap-1.5">
                 {(data?.trend ?? []).map((t) => (
-                  <span key={t.day} className="flex-1 text-center text-[9px] text-muted-foreground">{fmtDay(t.day)}</span>
+                  <span key={t.day} className={cn("flex-1 text-center text-[9px]",
+                    t.day === new Date().toISOString().slice(0, 10)
+                      ? "text-primary font-bold"
+                      : "text-muted-foreground"
+                  )}>{fmtDay(t.day)}</span>
                 ))}
               </div>
+              {trendDelta !== null && (
+                <p className={cn("text-[11px] font-semibold text-center",
+                  trendDelta >= 0 ? "text-emerald-600" : "text-red-500"
+                )}>
+                  {trendDelta >= 0 ? "▲" : "▼"} {Math.abs(trendDelta)}% vs yesterday
+                </p>
+              )}
             </>
           )}
         </div>

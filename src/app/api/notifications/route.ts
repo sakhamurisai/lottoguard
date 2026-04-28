@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { requireOwner, errResponse } from "@/lib/validate";
-import { listNotifications, markNotificationRead, markAllNotificationsRead } from "@/lib/db";
+import { listNotifications, markNotificationRead, markAllNotificationsRead, createNotification } from "@/lib/db";
 
 export async function GET() {
   try {
@@ -15,6 +15,25 @@ const patchSchema = z.object({
   sk:    z.string().optional(),
   all:   z.boolean().optional(),
 });
+
+const postSchema = z.object({
+  type:     z.string().min(1),
+  severity: z.enum(["emergency", "important", "warning", "info"]),
+  message:  z.string().min(1),
+  detail:   z.record(z.string(), z.unknown()).optional(),
+});
+
+export async function POST(req: Request) {
+  try {
+    const { orgId } = await requireOwner();
+    const body = postSchema.parse(await req.json());
+    const notif = await createNotification(orgId, body);
+    return Response.json({ notif }, { status: 201 });
+  } catch (err) {
+    if (err instanceof z.ZodError) return Response.json({ error: err.issues[0]?.message }, { status: 400 });
+    return errResponse(err);
+  }
+}
 
 export async function PATCH(req: Request) {
   try {
