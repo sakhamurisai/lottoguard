@@ -1,5 +1,5 @@
 import { requireOwner, errResponse } from "@/lib/validate";
-import { listBooks, listAllShifts, listSlots, listEmployees, getOrg } from "@/lib/db";
+import { listBooks, listAllShifts, listSlots, listEmployees } from "@/lib/db";
 
 const PRICE_TIERS = [1, 2, 5, 10, 20, 30, 50];
 
@@ -13,12 +13,11 @@ export async function GET(req: Request) {
     const days = cutoffDays[period] ?? 7;
     const cutoff = days !== null ? new Date(Date.now() - days * 86_400_000).toISOString() : null;
 
-    const [books, allShifts, slots, employees, org] = await Promise.all([
+    const [books, allShifts, slots, employees] = await Promise.all([
       listBooks(orgId),
       listAllShifts(orgId),
       listSlots(orgId),
       listEmployees(orgId),
-      getOrg(orgId),
     ]);
 
     const shifts = cutoff
@@ -90,20 +89,9 @@ export async function GET(req: Request) {
     // ── Warnings ──────────────────────────────────────────────────────────────
     const warnings: { type: string; message: string; severity: "error" | "warning" }[] = [];
 
-    const totalSlots  = (org as Record<string, unknown>)?.slots as number ?? 0;
-    const filledSlots = (slots as SlotR[]).filter((s) => s.bookId).length;
-    const emptySlots  = Math.max(0, totalSlots - filledSlots);
-    if (emptySlots > 0)
-      warnings.push({ type: "empty_slots", message: `${emptySlots} slot${emptySlots > 1 ? "s" : ""} with no book assigned`, severity: "warning" });
-
     const pendingEmps = (employees as EmpR[]).filter((e) => e.status === "pending").length;
     if (pendingEmps > 0)
       warnings.push({ type: "pending_employees", message: `${pendingEmps} employee${pendingEmps > 1 ? "s" : ""} awaiting approval`, severity: "warning" });
-
-    const slottedBookIds = new Set((slots as SlotR[]).map((s) => s.bookId).filter(Boolean));
-    const activeNoSlot   = (books as BookR[]).filter((b) => b.status === "active" && !slottedBookIds.has(b.bookId)).length;
-    if (activeNoSlot > 0)
-      warnings.push({ type: "active_no_slot", message: `${activeNoSlot} active book${activeNoSlot > 1 ? "s" : ""} not assigned to any slot`, severity: "error" });
 
     const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString();
     const staleBooks    = (books as BookR[]).filter(
@@ -118,6 +106,8 @@ export async function GET(req: Request) {
     const settledBooks    = (books as BookR[]).filter((b) => b.status === "settled").length;
     const totalEmployees  = (employees as EmpR[]).length;
     const activeEmployees = (employees as EmpR[]).filter((e) => e.status === "active").length;
+    const totalSlots      = (slots as SlotR[]).length;
+    const filledSlots     = (slots as SlotR[]).filter((s) => s.bookId).length;
 
     return Response.json({
       summary: { totalBooks, activeBooks, settledBooks, totalEmployees, activeEmployees, totalTicketsSold, filledSlots, totalSlots },

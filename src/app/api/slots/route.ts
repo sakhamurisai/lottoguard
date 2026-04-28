@@ -37,9 +37,7 @@ export async function POST(req: Request) {
     const o = org as Record<string, unknown>;
     const current: number = (o?.slotsPerTier as number) ?? 6;
     const next = action === "add" ? current + 1 : Math.max(1, current - 1);
-    // Ensure total org slots covers all tier blocks (8 tiers × 20 max per tier = 160)
-    const totalSlots = Math.max((o?.slots as number ?? 0), 8 * 20);
-    await updateOrg(orgId, { slotsPerTier: next, slots: totalSlots });
+    await updateOrg(orgId, { slotsPerTier: next });
     return Response.json({ slotsPerTier: next });
   } catch (err) {
     if (err instanceof z.ZodError) return Response.json({ error: err.issues?.[0]?.message ?? err.message }, { status: 400 });

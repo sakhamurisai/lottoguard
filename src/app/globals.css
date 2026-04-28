@@ -60,5 +60,46 @@
   }
   html {
     @apply font-sans;
+    scroll-behavior: smooth;
   }
 }
+
+/* ── Landing page scroll-reveal ─────────────────────────────────────────────── */
+[data-animate] {
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+[data-animate="fade-left"]  { transform: translateX(-30px); }
+[data-animate="fade-right"] { transform: translateX(30px);  }
+[data-animate="scale-in"]   { transform: scale(0.92) translateY(16px); }
+[data-animate].is-visible   { opacity: 1; transform: none;  }
+
+/* ── Landing keyframes ───────────────────────────────────────────────────────── */
+@keyframes blob-drift-1 {
+  0%,  100% { transform: translate(0,    0)    scale(1);    }
+  33%        { transform: translate(6%,  -9%)   scale(1.06); }
+  66%        { transform: translate(-4%, 6%)    scale(0.97); }
+}
+@keyframes blob-drift-2 {
+  0%,  100% { transform: translate(0,    0)    scale(1);    }
+  33%        { transform: translate(-7%, 5%)    scale(1.04); }
+  66%        { transform: translate(5%,  -7%)   scale(0.96); }
+}
+@keyframes float-slow {
+  0%,  100% { transform: translateY(0);    }
+  50%        { transform: translateY(-14px); }
+}
+@keyframes ticker-scroll {
+  from { transform: translateX(0);   }
+  to   { transform: translateX(-50%); }
+}
+@keyframes shine {
+  from { transform: translateX(-100%) skewX(-20deg); }
+  to   { transform: translateX(300%)  skewX(-20deg); }
+}
+
+.animate-float-slow { animation: float-slow 7s ease-in-out infinite; }
+.animate-float-slow-2 { animation: float-slow 7s ease-in-out infinite 2.5s; }
+.animate-ticker { animation: ticker-scroll 35s linear infinite; }
+.animate-ticker:hover { animation-play-state: paused; }
