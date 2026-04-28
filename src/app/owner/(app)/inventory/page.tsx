@@ -815,6 +815,9 @@ export default function InventoryPage() {
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [query,     setQuery]     = useState("");
+  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "inactive" | "settled">("all");
+  const [filterPrice,  setFilterPrice]  = useState<number | "all">("all");
+  const [sortBy,       setSortBy]       = useState<"date" | "name" | "books">("date");
   const [step,      setStep]      = useState<Step>("idle");
 
   // Drawer
@@ -894,6 +897,29 @@ export default function InventoryPage() {
   const filteredManual = query
     ? manualBooks.filter((b) => [b.gameName, b.gameId, b.pack].some((v) => v.toLowerCase().includes(qLower)))
     : manualBooks;
+
+  const sortedShipments = [...filteredShipments].sort((a, b) => {
+    if (sortBy === "name") return (a.shipmentNum ?? "").localeCompare(b.shipmentNum ?? "");
+    if (sortBy === "books") return (shipmentBooks[b.shipmentId]?.length ?? 0) - (shipmentBooks[a.shipmentId]?.length ?? 0);
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(); // date desc
+  });
+
+  const visibleShipments = sortedShipments.filter((s) => {
+    const sBooks = shipmentBooks[s.shipmentId] ?? [];
+    if (filterStatus !== "all" && !sBooks.some((b) => b.status === filterStatus)) return false;
+    if (filterPrice  !== "all" && !sBooks.some((b) => b.price  === filterPrice))  return false;
+    return true;
+  });
+
+  const visibleManual = filterStatus !== "all"
+    ? filteredManual.filter((b) => b.status === filterStatus)
+    : filteredManual;
+  const showManualCard = visibleManual.length > 0;
+
+  const totalActiveBooks   = books.filter((b) => b.status === "active").length;
+  const totalInactiveBooks = books.filter((b) => b.status === "inactive").length;
+  const totalSettledBooks  = books.filter((b) => b.status === "settled").length;
+  const totalInventoryValue = books.reduce((sum, b) => sum + (b.price * (b.ticketEnd - b.ticketStart + 1)), 0);
 
   const openShipment = openShipmentId && openShipmentId !== "manual"
     ? shipments.find((s) => s.shipmentId === openShipmentId) ?? null
@@ -1346,8 +1372,6 @@ export default function InventoryPage() {
   const failCount = crossChecks.filter((c) => c.status === "fail").length;
   const warnCount = crossChecks.filter((c) => c.status === "warn").length;
 
-  const showManualCard = !query ? manualBooks.length > 0 : filteredManual.length > 0;
-
   return (
     <div className="p-4 sm:p-6 space-y-5">
 
@@ -1387,12 +1411,68 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      {/* Search */}
-      <div className="relative max-w-sm">
-        <MagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-        <input value={query} onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search shipment # or game name…"
-          className="w-full border rounded-xl pl-10 pr-4 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition" />
+      {/* ── Filter bar ────────────────────────────────────────────────────────── */}
+      <div className="space-y-3">
+        {/* Summary stats strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: "Active",   value: totalActiveBooks,   color: "text-emerald-600", bg: "bg-emerald-500/10 border-emerald-200/60" },
+            { label: "Inactive", value: totalInactiveBooks, color: "text-foreground",  bg: "bg-muted/60 border-border" },
+            { label: "Settled",  value: totalSettledBooks,  color: "text-blue-600",    bg: "bg-blue-500/10 border-blue-200/60" },
+            { label: "Est. Value", value: `$${totalInventoryValue >= 1000 ? `${(totalInventoryValue / 1000).toFixed(0)}k` : totalInventoryValue.toLocaleString()}`, color: "text-violet-600", bg: "bg-violet-500/10 border-violet-200/60" },
+          ].map(({ label, value, color, bg }) => (
+            <div key={label} className={cn("border rounded-xl px-4 py-3 flex items-center justify-between", bg)}>
+              <span className="text-xs font-medium text-muted-foreground">{label}</span>
+              <span className={cn("text-lg font-black", color)}>{loading ? "—" : value}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Search + filters row */}
+        <div className="flex flex-col sm:flex-row gap-2">
+          {/* Search */}
+          <div className="relative flex-1 min-w-0">
+            <MagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search shipment #, order #, or game name…"
+              className="w-full border rounded-xl pl-10 pr-4 py-2.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition" />
+          </div>
+
+          {/* Status filter */}
+          <div className="flex items-center gap-0.5 border rounded-xl overflow-hidden bg-muted/40 p-0.5 shrink-0">
+            {(["all", "active", "inactive", "settled"] as const).map((s) => (
+              <button key={s} onClick={() => setFilterStatus(s)}
+                className={cn("px-2.5 py-1.5 text-xs font-semibold rounded-lg transition-all capitalize whitespace-nowrap",
+                  filterStatus === s ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+                {s === "all" ? "All" : s}
+              </button>
+            ))}
+          </div>
+
+          {/* Sort */}
+          <select value={sortBy} onChange={(e) => setSortBy(e.target.value as "date" | "name" | "books")}
+            className="border rounded-xl px-3 py-2 text-xs bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 shrink-0 font-medium text-muted-foreground">
+            <option value="date">Sort: Newest</option>
+            <option value="books">Sort: Most Books</option>
+            <option value="name">Sort: Name</option>
+          </select>
+        </div>
+
+        {/* Price tier filter */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs font-medium text-muted-foreground shrink-0">Price:</span>
+          {(["all", 1, 2, 5, 10, 20, 30, 50] as const).map((p) => (
+            <button key={p} onClick={() => setFilterPrice(p)}
+              className={cn(
+                "px-2.5 py-1 text-xs font-semibold rounded-full border transition-all",
+                filterPrice === p
+                  ? "bg-foreground text-background border-foreground"
+                  : "bg-background text-muted-foreground border-border hover:border-foreground/30 hover:text-foreground"
+              )}>
+              {p === "all" ? "All" : `$${p}`}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Shipment grid */}
@@ -1402,13 +1482,22 @@ export default function InventoryPage() {
             <div key={i} className="h-44 border rounded-2xl bg-muted/40 animate-pulse" />
           ))}
         </div>
-      ) : filteredShipments.length === 0 && !showManualCard ? (
+      ) : visibleShipments.length === 0 && !showManualCard ? (
         <div className="text-center py-16 space-y-3 border border-dashed rounded-2xl">
           <Truck className="size-10 text-muted-foreground/30 mx-auto" />
           <p className="text-muted-foreground text-sm">
-            {query ? "No shipments or books match your search." : "No shipments yet. Click Add Books to get started."}
+            {query || filterStatus !== "all" || filterPrice !== "all"
+              ? "No shipments match your filters."
+              : "No shipments yet. Click Add Books to get started."}
           </p>
-          {!query && (
+          {(query || filterStatus !== "all" || filterPrice !== "all") && (
+            <button
+              onClick={() => { setQuery(""); setFilterStatus("all"); setFilterPrice("all"); }}
+              className="text-xs text-primary hover:underline font-medium">
+              Clear all filters
+            </button>
+          )}
+          {!query && filterStatus === "all" && filterPrice === "all" && (
             <button onClick={() => setStep("method")} className="text-xs text-primary hover:underline font-medium">
               + Add your first shipment
             </button>
@@ -1416,7 +1505,7 @@ export default function InventoryPage() {
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
-          {filteredShipments.map((s) => (
+          {visibleShipments.map((s) => (
             <ShipmentCard
               key={s.shipmentId}
               shipment={s}
@@ -1427,7 +1516,7 @@ export default function InventoryPage() {
           {showManualCard && (
             <ShipmentCard
               shipment={null}
-              books={filteredManual}
+              books={visibleManual}
               onClick={() => setOpenShipmentId("manual")}
             />
           )}

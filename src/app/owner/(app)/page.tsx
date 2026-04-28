@@ -33,6 +33,8 @@ type Analytics = {
   soldByTier: SoldByTier;
   trend: TrendPoint[];
   warnings: AnalyticsWarning[];
+  estimatedRevenue: number;
+  period: string;
 };
 
 type Notif = {
@@ -73,11 +75,13 @@ export default function OwnerDashboard() {
   const [dismissed,  setDismissed]  = useState<Set<string>>(new Set());
   const [notifs,     setNotifs]     = useState<Notif[]>([]);
   const [ackedNotifs,setAckedNotifs]= useState<Set<string>>(new Set());
+  const [period,      setPeriod]      = useState<"7d" | "30d" | "90d" | "all">("7d");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   async function load() {
     setLoading(true);
     const [analyticsRes, notifRes] = await Promise.all([
-      fetch("/api/analytics"),
+      fetch(`/api/analytics?period=${period}`),
       fetch("/api/notifications"),
     ]);
     if (analyticsRes.ok) setData(await analyticsRes.json());
@@ -86,6 +90,7 @@ export default function OwnerDashboard() {
       setNotifs(nd.notifications ?? []);
     }
     setLoading(false);
+    setLastUpdated(new Date());
   }
 
   async function acknowledgeNotif(sk: string) {
@@ -112,7 +117,7 @@ export default function OwnerDashboard() {
   useEffect(() => {
     if (!authLoading && user) load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user]);
+  }, [authLoading, user, period]);
 
   const warnings = (data?.warnings ?? []).filter((w) => !dismissed.has(w.type));
 
@@ -128,8 +133,7 @@ export default function OwnerDashboard() {
   const trendMax  = Math.max(1, ...(data?.trend ?? []).map((t) => t.sold));
 
   // Derived metrics
-  const estimatedRevenue = Object.entries(data?.soldByTier ?? {})
-    .reduce((sum, [price, sold]) => sum + Number(price) * sold, 0);
+  const estimatedRevenue = data?.estimatedRevenue ?? 0;
   const slotFillPct = s && s.totalSlots > 0
     ? Math.round((s.filledSlots / s.totalSlots) * 100)
     : null;
@@ -194,7 +198,7 @@ export default function OwnerDashboard() {
           <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
           <p className="text-sm text-muted-foreground mt-0.5">{user?.orgName ?? "Loading…"}</p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap justify-end">
           {unreadCount > 0 && (
             <div className="relative">
               <Bell weight="fill" className="size-5 text-muted-foreground" />
@@ -203,9 +207,35 @@ export default function OwnerDashboard() {
               </span>
             </div>
           )}
-          <button onClick={load} className="p-2 border rounded-xl hover:bg-muted transition-colors text-muted-foreground">
-            <ArrowClockwise className={cn("size-4", loading && "animate-spin")} />
-          </button>
+          {/* Period selector */}
+          <div className="flex items-center gap-0.5 border rounded-xl overflow-hidden bg-muted/40 p-0.5">
+            {(["7d", "30d", "90d", "all"] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={cn(
+                  "px-3 py-1.5 text-xs font-semibold rounded-lg transition-all",
+                  period === p
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {p === "all" ? "All" : p.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-col items-end gap-0.5">
+            <button onClick={load} className="p-2 border rounded-xl hover:bg-muted transition-colors text-muted-foreground">
+              <ArrowClockwise className={cn("size-4", loading && "animate-spin")} />
+            </button>
+            {lastUpdated && (
+              <p className="text-[10px] text-muted-foreground text-right whitespace-nowrap">
+                Updated {Math.floor((Date.now() - lastUpdated.getTime()) / 60000) < 1
+                  ? "just now"
+                  : `${Math.floor((Date.now() - lastUpdated.getTime()) / 60000)}m ago`}
+              </p>
+            )}
+          </div>
           <Link href="/owner/inventory"
             className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-xl hover:opacity-90 transition-opacity font-medium shadow-sm">
             + Add Shipment
@@ -380,14 +410,18 @@ export default function OwnerDashboard() {
           )}
         </div>
 
-        {/* ── 7-day trend ── */}
+        {/* ── trend ── */}
         <div className="border rounded-2xl p-5 space-y-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-sm">7-Day Trend</h2>
+            <h2 className="font-semibold text-sm">
+              {period === "7d" ? "7-Day Trend" : period === "30d" ? "30-Day Trend" : period === "90d" ? "90-Day Trend" : "All-Time Trend"}
+            </h2>
             {!loading && (
               <div className="text-right">
                 <p className="text-sm font-bold">{todaySold.toLocaleString()}</p>
-                <p className="text-[10px] text-muted-foreground">today</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {period === "7d" ? "Past 7 days" : period === "30d" ? "Past 30 days" : period === "90d" ? "Past 90 days" : "All time"}
+                </p>
               </div>
             )}
           </div>
