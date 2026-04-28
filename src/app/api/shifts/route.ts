@@ -63,8 +63,9 @@ const directEntrySchema = z.object({
 const bookEntrySchema = z.union([serialEntrySchema, directEntrySchema]);
 
 const clockInSchema = z.object({
-  action:  z.literal("clock_in"),
-  entries: z.array(bookEntrySchema).min(1),
+  action:       z.literal("clock_in"),
+  entries:      z.array(bookEntrySchema).min(1),
+  isStartShift: z.boolean().optional(),
 });
 
 const receiptDataSchema = z.object({
@@ -103,6 +104,7 @@ const clockOutSchema = z.object({
     bookId:  z.string(),
     slotNum: z.number().int().min(1),
   })).optional(),
+  isDayClose: z.boolean().optional(),
 });
 
 const bookSoldOutSchema = z.object({
@@ -240,12 +242,18 @@ export async function POST(req: Request) {
         primary.ticketStart, primary.slotNum,
       );
 
-      // Attach all book entries to shift record
+      // Attach all book entries (and optional start-of-day flag) to shift record
+      const _isStartShift = body.isStartShift;
       await db.send(new UpdateCommand({
         TableName: TABLE,
         Key: { PK: `ORG#${payload.orgId}`, SK: `SHIFT#${payload.sub}#${shift.shiftId}` },
-        UpdateExpression: "SET shiftBooks = :sb",
-        ExpressionAttributeValues: { ":sb": resolvedEntries },
+        UpdateExpression: _isStartShift !== undefined
+          ? "SET shiftBooks = :sb, isStartShift = :is"
+          : "SET shiftBooks = :sb",
+        ExpressionAttributeValues: {
+          ":sb": resolvedEntries,
+          ...(_isStartShift !== undefined ? { ":is": _isStartShift } : {}),
+        },
       }));
 
       return Response.json({ shift: { ...shift, shiftBooks: resolvedEntries } }, { status: 201 });
@@ -380,13 +388,17 @@ export async function POST(req: Request) {
         discrepancySeverity,
       });
 
-      // Store per-slot end tickets for audit trail
-      if (b.shiftEndEntries?.length) {
+      // Store per-slot end tickets + isDayClose for audit trail
+      if (b.shiftEndEntries?.length || b.isDayClose !== undefined) {
+        const _updateParts: string[] = [];
+        const _updateVals: Record<string, unknown> = {};
+        if (b.shiftEndEntries?.length) { _updateParts.push("shiftEndEntries = :se"); _updateVals[":se"] = b.shiftEndEntries; }
+        if (b.isDayClose !== undefined) { _updateParts.push("isDayClose = :dc"); _updateVals[":dc"] = b.isDayClose; }
         await db.send(new UpdateCommand({
           TableName: TABLE,
           Key: { PK: `ORG#${payload.orgId}`, SK: `SHIFT#${payload.sub}#${b.shiftId}` },
-          UpdateExpression: "SET shiftEndEntries = :se",
-          ExpressionAttributeValues: { ":se": b.shiftEndEntries },
+          UpdateExpression: `SET ${_updateParts.join(", ")}`,
+          ExpressionAttributeValues: _updateVals,
         }));
       }
 

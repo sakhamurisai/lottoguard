@@ -7,9 +7,21 @@ import {
   Camera, AlertTriangle, X,
   ArrowRight, ArrowLeft,
   Upload, Eye, RotateCcw, BookOpen, RefreshCw,
+  Sun, Users, Scan, Hash,
 } from "lucide-react";
 import { useAuth } from "@/components/auth-provider";
 import { cn } from "@/lib/utils";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Serial parser  format: GGGG-BBBBBBB-TTT-C
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TICKET_SERIAL_RE = /^(\d{4})-(\d{7})-(\d{3})-\d$/;
+function parseTicketSerial(s: string) {
+  const m = TICKET_SERIAL_RE.exec(s.trim());
+  if (!m) return null;
+  return { gameId: m[1], bookNum: m[2], ticketNum: parseInt(m[3], 10) };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -642,6 +654,18 @@ export default function EmployeeDashboard() {
   // ── UI ────────────────────────────────────────────────────────────────────
   const [clockStep, setClockStep] = useState<ClockStep>("idle");
 
+  // Shift type prompt
+  const [shiftTypeModal, setShiftTypeModal] = useState(false);
+  const [shiftType,      setShiftType]      = useState<"start" | "continuation" | null>(null);
+
+  // Slot entry popup (used during slot_tickets step)
+  const [activeSlotPopup,  setActiveSlotPopup]  = useState<number | null>(null);
+  const [slotPopupSerial,  setSlotPopupSerial]  = useState("");
+  const [slotPopupMode,    setSlotPopupMode]    = useState<"number" | "serial">("number");
+
+  // Day close
+  const [isDayClose, setIsDayClose] = useState(false);
+
   // Clock-in state
   const [selectedSlots,    setSelectedSlots]    = useState<number[]>([]);
   const [slotTicketInputs, setSlotTicketInputs] = useState<Record<number, string>>({});
@@ -727,7 +751,7 @@ export default function EmployeeDashboard() {
     const r = await fetch("/api/shifts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "clock_in", entries }),
+      body: JSON.stringify({ action: "clock_in", entries, isStartShift: shiftType === "start" }),
     });
     const data = await r.json() as { shift?: Shift & { shiftBooks?: ScannedEntry[] }; error?: string };
     if (r.ok && data.shift) {
@@ -767,6 +791,7 @@ export default function EmployeeDashboard() {
         discrepancyNote: discrepNote || undefined,
         salesReceipt:    salesReceipt  ?? undefined,
         cashesReceipt:   cashesReceipt ?? undefined,
+        isDayClose,
       }),
     });
     const data = await r.json() as {
@@ -805,6 +830,8 @@ export default function EmployeeDashboard() {
     setCashesReceipt(null);
     setDrawerCash("");
     setDiscrepNote("");
+    setIsDayClose(false);
+    setShiftType(null);
   }
 
   // ── Book sold out (mid-shift) ─────────────────────────────────────────────
@@ -903,6 +930,217 @@ export default function EmployeeDashboard() {
         </div>
       )}
 
+      {/* ── Shift type modal (Start / Continuation) ── */}
+      {shiftTypeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-background border rounded-3xl p-6 w-full max-w-sm space-y-5 shadow-2xl">
+            <div className="text-center space-y-2">
+              <div className="size-14 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
+                <Clock className="size-7 text-primary" />
+              </div>
+              <h2 className="text-xl font-bold">Starting Your Shift</h2>
+              <p className="text-sm text-muted-foreground">
+                Is this the start of the day, or are you taking over from another employee?
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => {
+                  setShiftType("start");
+                  setShiftTypeModal(false);
+                  setClockStep("slot_select");
+                }}
+                className="flex flex-col items-center gap-2.5 p-4 border-2 rounded-2xl hover:border-primary hover:bg-primary/5 transition-all"
+              >
+                <Sun className="size-6 text-amber-500" />
+                <div className="text-center">
+                  <p className="text-sm font-bold">Start of Day</p>
+                  <p className="text-xs text-muted-foreground">First shift today</p>
+                </div>
+              </button>
+              <button
+                onClick={() => {
+                  setShiftType("continuation");
+                  setShiftTypeModal(false);
+                  setClockStep("slot_select");
+                }}
+                className="flex flex-col items-center gap-2.5 p-4 border-2 rounded-2xl hover:border-primary hover:bg-primary/5 transition-all"
+              >
+                <Users className="size-6 text-blue-500" />
+                <div className="text-center">
+                  <p className="text-sm font-bold">Continuation</p>
+                  <p className="text-xs text-muted-foreground">Taking over mid-day</p>
+                </div>
+              </button>
+            </div>
+            <button
+              onClick={() => setShiftTypeModal(false)}
+              className="w-full text-sm text-muted-foreground hover:text-foreground transition-colors py-2"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Slot entry popup (blurred overlay, used in slot_tickets step) ── */}
+      {activeSlotPopup !== null && (() => {
+        const sn         = activeSlotPopup;
+        const slot       = slots.find(s => s.slotNum === sn);
+        const tierIdx    = Math.floor((sn - 1) / MAX_PER_TIER);
+        const tier       = TIERS[tierIdx];
+        const val        = slotTicketInputs[sn] ?? "";
+        const customName = slotNames[String(sn)] ?? "";
+        const parsed     = slotPopupMode === "serial" ? parseTicketSerial(slotPopupSerial) : null;
+
+        function closePopup() {
+          setActiveSlotPopup(null);
+          setSlotPopupSerial("");
+          setSlotPopupMode("number");
+        }
+
+        function handlePopupDone() {
+          if (slotPopupMode === "serial" && parsed) {
+            setSlotTicketInputs(prev => ({ ...prev, [sn]: String(parsed.ticketNum) }));
+          }
+          closePopup();
+        }
+
+        const isDoneEnabled = slotPopupMode === "number"
+          ? (val !== "" && !isNaN(parseInt(val, 10)))
+          : parsed !== null;
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ backdropFilter: "blur(8px)", background: "rgba(0,0,0,0.55)" }}
+            onClick={closePopup}
+          >
+            <div
+              className="bg-background border rounded-3xl w-full max-w-sm shadow-2xl overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className={cn("px-5 py-4", tier?.headerBg ?? "bg-muted/40")}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div style={FOLD} className={cn(
+                      "size-10 rounded-xl border flex items-center justify-center font-black text-sm shrink-0",
+                      tier ? cn(tier.bg, tier.color, tier.border) : "bg-muted text-muted-foreground"
+                    )}>
+                      {tier?.label ?? `#${sn}`}
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold">Slot #{sn}</p>
+                      {customName && <p className="text-xs text-muted-foreground">{customName}</p>}
+                    </div>
+                  </div>
+                  <button onClick={closePopup} className="p-1.5 rounded-xl hover:bg-black/10 transition-colors">
+                    <X className="size-4" />
+                  </button>
+                </div>
+                {slot?.gameName && (
+                  <p className="text-xs text-muted-foreground mt-2.5">
+                    {slot.gameName}{slot.pack ? ` · Pack ${slot.pack}` : ""}
+                  </p>
+                )}
+              </div>
+
+              {/* Body */}
+              <div className="p-5 space-y-4">
+                {/* Mode toggle */}
+                <div className="flex items-center gap-1 bg-muted p-0.5 rounded-xl">
+                  {([
+                    { id: "number" as const, icon: Hash, label: "Ticket #" },
+                    { id: "serial" as const, icon: Scan, label: "Serial Scan" },
+                  ]).map(({ id, icon: Icon, label }) => (
+                    <button
+                      key={id}
+                      onClick={() => setSlotPopupMode(id)}
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all",
+                        slotPopupMode === id
+                          ? "bg-background shadow-sm text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <Icon className="size-3.5" /> {label}
+                    </button>
+                  ))}
+                </div>
+
+                {slotPopupMode === "number" ? (
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                      Starting Ticket #
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      autoFocus
+                      placeholder={slot?.ticketStart != null ? String(slot.ticketStart) : "e.g. 025"}
+                      value={val}
+                      onChange={e => {
+                        setSlotTicketInputs(prev => ({ ...prev, [sn]: e.target.value }));
+                        setClockInError("");
+                      }}
+                      className="w-full border rounded-xl px-4 py-3 text-2xl bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition font-mono font-black text-center"
+                    />
+                    {slot?.ticketStart != null && (
+                      <p className="text-xs text-muted-foreground text-center">
+                        Expected: <span className="font-mono font-semibold text-foreground">#{slot.ticketStart}</span>
+                        {" "}— enter the first unsold ticket in this book
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                      Ticket Serial Number
+                    </label>
+                    <input
+                      type="text"
+                      autoFocus
+                      placeholder="1069-0012055-094-0"
+                      value={slotPopupSerial}
+                      onChange={e => {
+                        setSlotPopupSerial(e.target.value);
+                        const p = parseTicketSerial(e.target.value);
+                        if (p) setSlotTicketInputs(prev => ({ ...prev, [sn]: String(p.ticketNum) }));
+                      }}
+                      className="w-full border rounded-xl px-4 py-3 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition font-mono"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Format: <span className="font-mono">GGGG-BBBBBBB-TTT-C</span>
+                    </p>
+                    {parsed && (
+                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 space-y-1">
+                        <p className="font-semibold">Decoded successfully</p>
+                        <p>Game ID: <span className="font-mono">{parsed.gameId}</span> · Book: <span className="font-mono">{parsed.bookNum}</span></p>
+                        <p className="font-bold">Starting Ticket: <span className="font-mono text-sm">#{parsed.ticketNum}</span></p>
+                      </div>
+                    )}
+                    {slotPopupSerial && !parsed && (
+                      <p className="text-xs text-amber-600 flex items-center gap-1">
+                        <AlertTriangle className="size-3.5 shrink-0" /> Enter the full serial to decode
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  onClick={handlePopupDone}
+                  disabled={!isDoneEnabled}
+                  className="w-full bg-primary text-primary-foreground py-3 rounded-2xl text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  <CheckCircle className="size-4" /> Done
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Active shift timer pill ── */}
       {active && (
         <div className="px-4 pt-3 flex justify-center">
@@ -937,7 +1175,7 @@ export default function EmployeeDashboard() {
                   </p>
                 </div>
                 <button
-                  onClick={() => { setClockStep("slot_select"); setClockInError(""); }}
+                  onClick={() => { setShiftTypeModal(true); setClockInError(""); }}
                   className="w-full max-w-xs flex items-center justify-center gap-2.5 bg-primary text-primary-foreground py-4 rounded-2xl font-bold text-lg hover:opacity-90 transition-opacity shadow-md"
                 >
                   <Clock className="size-5" /> Clock In
@@ -1041,7 +1279,7 @@ export default function EmployeeDashboard() {
                   <div className="pt-1">
                     <p className="text-xl font-bold">Enter Starting Tickets</p>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Enter the number on the first unsold ticket of each book exactly as printed.
+                      Tap each slot to enter the first unsold ticket number. You can type it directly or scan the serial.
                     </p>
                   </div>
                 </div>
@@ -1052,63 +1290,66 @@ export default function EmployeeDashboard() {
                   </div>
                 )}
 
-                <div className="space-y-3">
+                {/* Compact slot grid — tap to open popup */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                   {[...selectedSlots].sort((a, b) => a - b).map(sn => {
-                    const slot      = slots.find(s => s.slotNum === sn);
-                    const tierIdx   = Math.floor((sn - 1) / MAX_PER_TIER);
-                    const tier      = TIERS[tierIdx];
-                    const val       = slotTicketInputs[sn] ?? "";
-                    const isValid   = val !== "" && !isNaN(parseInt(val, 10));
+                    const slot       = slots.find(s => s.slotNum === sn);
+                    const tierIdx    = Math.floor((sn - 1) / MAX_PER_TIER);
+                    const tier       = TIERS[tierIdx];
+                    const val        = slotTicketInputs[sn] ?? "";
+                    const isValid    = val !== "" && !isNaN(parseInt(val, 10));
                     const customName = slotNames[String(sn)] ?? "";
 
                     return (
-                      <div key={sn} className={cn("border rounded-2xl overflow-hidden shadow-sm", tier?.border ?? "border-border")}>
-                        {/* Card header */}
-                        <div className={cn("px-4 py-3 flex items-center gap-3", tier?.headerBg ?? "bg-muted/40")}>
-                          <div style={FOLD} className={cn(
-                            "size-10 rounded-xl border flex items-center justify-center font-black text-sm shrink-0",
-                            tier ? cn(tier.bg, tier.color, tier.border) : "bg-muted text-muted-foreground"
-                          )}>
+                      <button
+                        key={sn}
+                        type="button"
+                        onClick={() => {
+                          setSlotPopupMode("number");
+                          setSlotPopupSerial("");
+                          setActiveSlotPopup(sn);
+                        }}
+                        className={cn(
+                          "relative flex flex-col items-start p-3 rounded-2xl border-2 text-left transition-all hover:shadow-md active:scale-[0.98]",
+                          isValid
+                            ? cn("border-emerald-300", tier?.bg ?? "bg-background")
+                            : "border-dashed border-muted-foreground/30 bg-background hover:border-primary/50"
+                        )}
+                      >
+                        <div className="flex items-center justify-between w-full mb-1.5">
+                          <span className={cn("text-xs font-black", tier?.color ?? "text-muted-foreground")}>
                             {tier?.label ?? `#${sn}`}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-bold">
-                              Slot #{sn}{customName ? <span className="text-muted-foreground font-normal"> · {customName}</span> : ""}
-                            </p>
-                            {slot?.gameName && (
-                              <p className="text-xs text-muted-foreground truncate">{slot.gameName}{slot.pack ? ` · Pack ${slot.pack}` : ""}</p>
-                            )}
-                          </div>
-                          {isValid && <CheckCircle className="size-5 text-emerald-500 shrink-0" />}
+                          </span>
+                          {isValid
+                            ? <CheckCircle className="size-4 text-emerald-500" />
+                            : <span className="text-[10px] text-muted-foreground/50 font-semibold">TAP</span>
+                          }
                         </div>
-
-                        {/* Input */}
-                        <div className="px-4 py-3 space-y-2 bg-background">
-                          <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                            Starting Ticket #
-                          </label>
-                          <input
-                            type="number"
-                            min="0"
-                            placeholder={slot?.ticketStart != null ? String(slot.ticketStart) : "e.g. 025"}
-                            value={val}
-                            onChange={e => {
-                              setSlotTicketInputs(prev => ({ ...prev, [sn]: e.target.value }));
-                              setClockInError("");
-                            }}
-                            className="w-full border rounded-xl px-4 py-3 text-base bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition font-mono font-bold"
-                          />
-                          {slot?.ticketStart != null && (
-                            <p className="text-xs text-muted-foreground">
-                              Expected: <span className="font-mono font-semibold text-foreground">#{slot.ticketStart}</span>
-                              {" "}— must match the first unsold ticket in your book
-                            </p>
-                          )}
+                        <p className="text-xs font-bold leading-tight">
+                          Slot #{sn}{customName ? <span className="font-normal text-muted-foreground"> · {customName}</span> : ""}
+                        </p>
+                        {slot?.gameName && (
+                          <p className="text-[10px] text-muted-foreground truncate w-full mt-0.5">{slot.gameName}</p>
+                        )}
+                        <div className={cn(
+                          "mt-2 w-full text-center text-xs rounded-lg py-1.5 font-mono font-bold transition-colors",
+                          isValid
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : "bg-muted/60 text-muted-foreground"
+                        )}>
+                          {isValid ? `#${val}` : "Tap to enter"}
                         </div>
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
+
+                {/* Progress indicator */}
+                {selectedSlots.length > 0 && (
+                  <p className="text-xs text-center text-muted-foreground">
+                    {selectedSlots.filter(sn => slotTicketInputs[sn]?.trim()).length} of {selectedSlots.length} slots entered
+                  </p>
+                )}
 
                 <button
                   onClick={() => {
@@ -1590,6 +1831,31 @@ export default function EmployeeDashboard() {
                   </div>
                 )}
 
+                {/* Day close toggle */}
+                {drawerCash && (
+                  <button
+                    type="button"
+                    onClick={() => setIsDayClose(v => !v)}
+                    className={cn(
+                      "w-full flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl border-2 transition-all text-left",
+                      isDayClose
+                        ? "border-amber-300 bg-amber-50 text-amber-800"
+                        : "border-border bg-background hover:border-amber-200 hover:bg-amber-50/40"
+                    )}
+                  >
+                    <div>
+                      <p className="text-sm font-semibold">Day Close</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Last shift of the day? Toggle to mark as day close.</p>
+                    </div>
+                    <div className={cn(
+                      "size-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all",
+                      isDayClose ? "bg-amber-500 border-amber-500" : "border-border"
+                    )}>
+                      {isDayClose && <Check className="size-3 text-white" />}
+                    </div>
+                  </button>
+                )}
+
                 <button
                   onClick={submitClockOut}
                   disabled={submitting || !drawerCash || (needsNote && !discrepNote.trim())}
@@ -1597,7 +1863,7 @@ export default function EmployeeDashboard() {
                 >
                   {submitting
                     ? <span className="size-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
-                    : <><ArrowRight className="size-4" /> Submit &amp; Clock Out</>
+                    : <><ArrowRight className="size-4" /> Submit &amp; Clock Out{isDayClose ? " · Day Close" : ""}</>
                   }
                 </button>
               </div>

@@ -836,11 +836,12 @@ export default function InventoryPage() {
   const [orderEditing,     setOrderEditing]     = useState(false);
 
   // Review state
-  const [reviewBooks, setReviewBooks] = useState<ReviewBook[]>([]);
-  const [selected,    setSelected]    = useState<Set<number>>(new Set());
-  const [edits,       setEdits]       = useState<Record<number, Partial<ReviewBook>>>({});
-  const [importing,   setImporting]   = useState(false);
-  const [importDone,  setImportDone]  = useState(false);
+  const [reviewBooks,      setReviewBooks]      = useState<ReviewBook[]>([]);
+  const [selected,         setSelected]         = useState<Set<number>>(new Set());
+  const [edits,            setEdits]            = useState<Record<number, Partial<ReviewBook>>>({});
+  const [importing,        setImporting]        = useState(false);
+  const [importDone,       setImportDone]       = useState(false);
+  const [duplicatePacks,   setDuplicatePacks]   = useState<string[]>([]); // pack numbers duplicated across existing books
 
   // Manual entry
   const [manualForm, setManualForm] = useState({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
@@ -946,6 +947,7 @@ export default function InventoryPage() {
     setSelected(new Set());
     setEdits({});
     setImportDone(false);
+    setDuplicatePacks([]);
     setManualForm({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
     setManualError("");
   }
@@ -1291,6 +1293,16 @@ export default function InventoryPage() {
     setSelected(new Set(rb.map((_, i) => i)));
     setEdits({});
     setImportDone(false);
+
+    // Check new packs against every pack already in the database
+    const existingPacks = new Set(books.map((b) => `${b.gameId}|${b.pack}`));
+    const dupes: string[] = [];
+    for (const b of rb) {
+      const key = `${b.gameId}|${b.pack}`;
+      if (existingPacks.has(key)) dupes.push(`${b.gameName} · Pack ${b.pack}`);
+    }
+    setDuplicatePacks(dupes);
+
     setStep("review");
   }
 
@@ -2147,6 +2159,33 @@ export default function InventoryPage() {
                     </div>
                   ) : (
                     <>
+                      {/* ── Duplicate pack warning ─────────────────────────────────────── */}
+                      {duplicatePacks.length > 0 && (
+                        <div className="rounded-2xl border-2 border-red-300 bg-red-50 dark:bg-red-950/30 dark:border-red-800/50 p-4 space-y-2.5">
+                          <div className="flex items-center gap-2.5">
+                            <div className="size-8 rounded-xl bg-red-100 dark:bg-red-900/40 flex items-center justify-center shrink-0">
+                              <Warning weight="fill" className="size-5 text-red-600" />
+                            </div>
+                            <div>
+                              <p className="font-bold text-sm text-red-800 dark:text-red-300">⚠ HIGH PRIORITY — Duplicate Packs Detected</p>
+                              <p className="text-xs text-red-700 dark:text-red-400 mt-0.5">
+                                {duplicatePacks.length} pack{duplicatePacks.length !== 1 ? "s" : ""} in this delivery already exist in your inventory. This may indicate a duplicate shipment.
+                              </p>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            {duplicatePacks.map((d, i) => (
+                              <div key={i} className="text-xs text-red-700 dark:text-red-400 bg-red-100/60 dark:bg-red-900/20 rounded-lg px-3 py-1.5 font-mono font-medium">
+                                {d}
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-xs text-red-600 dark:text-red-500 font-medium">
+                            Review carefully before importing. Deselect any duplicates above.
+                          </p>
+                        </div>
+                      )}
+
                       <div className="flex items-center justify-between">
                         <p className="text-sm font-semibold">{[...selected].length} of {reviewBooks.length} books selected</p>
                         <button onClick={() => setSelected(selected.size === reviewBooks.length ? new Set() : new Set(reviewBooks.map((_, i) => i)))}
