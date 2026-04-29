@@ -3,6 +3,7 @@ import { requireOwner, errResponse } from "@/lib/validate";
 import { updateShipment, deleteShipment, listBooks, deleteBook } from "@/lib/db";
 
 const patchSchema = z.object({
+  name:        z.string().optional(),
   orderNumber: z.string().optional(),
   shipmentNum: z.string().optional(),
   date:        z.string().optional(),

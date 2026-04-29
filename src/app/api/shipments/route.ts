@@ -11,12 +11,14 @@ export async function GET() {
 }
 
 const schema = z.object({
+  name:         z.string().optional(),
   orderNumber:  z.string().optional(),
   shipmentNum:  z.string().optional(),
   date:         z.string().optional(),
   retailerNum:  z.string().optional(),
   totalBooks:   z.coerce.number().int().min(0).default(0),
   notes:        z.string().optional(),
+  source:       z.enum(["ai", "manual"]).optional(),
 });
 
 export async function POST(req: Request) {

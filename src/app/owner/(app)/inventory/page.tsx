@@ -24,9 +24,9 @@ type Book = {
 };
 
 type Shipment = {
-  shipmentId: string; orderNumber?: string; shipmentNum?: string;
+  shipmentId: string; name?: string; orderNumber?: string; shipmentNum?: string;
   date?: string; retailerNum?: string; totalBooks: number;
-  notes?: string; createdAt: string; updatedAt?: string;
+  notes?: string; source?: "ai" | "manual"; createdAt: string; updatedAt?: string;
 };
 
 type ReviewBook = {
@@ -38,7 +38,8 @@ type Step =
   | "idle" | "method"
   | "delivery" | "delivery-result"
   | "order"   | "order-result"
-  | "review";
+  | "review"
+  | "manual";
 
 type ValidationCheck = { label: string; status: "pass" | "fail" | "warn"; detail?: string };
 
@@ -317,14 +318,23 @@ function ShipmentCard({
           <p className="font-semibold text-sm text-muted-foreground">Manual Entries</p>
         ) : (
           <>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <p className="font-semibold text-sm truncate">
+                {shipment!.name || (shipment!.shipmentNum ? `Shipment ${shipment!.shipmentNum}` : "Shipment")}
+              </p>
+              {shipment!.source && (
+                <span className={cn(
+                  "text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full shrink-0",
+                  shipment!.source === "ai"
+                    ? "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400"
+                    : "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400",
+                )}>
+                  {shipment!.source === "ai" ? "AI" : "Manual"}
+                </span>
+              )}
+            </div>
             {shipment!.orderNumber && (
               <p className="font-mono text-xs text-muted-foreground">#{shipment!.orderNumber}</p>
-            )}
-            {shipment!.shipmentNum && (
-              <p className="font-semibold text-sm">Shipment {shipment!.shipmentNum}</p>
-            )}
-            {!shipment!.shipmentNum && !shipment!.orderNumber && (
-              <p className="font-semibold text-sm text-muted-foreground">Shipment</p>
             )}
           </>
         )}
@@ -365,15 +375,17 @@ function ShipmentCard({
 // ── ShipmentDrawer ────────────────────────────────────────────────────────────
 
 function ShipmentDrawer({
-  shipment, books, isManual,
-  onClose, onBookUpdated, onBookDeleted, onShipmentDeleted, onShipmentUpdated,
+  shipment, books, isManual, slotNames,
+  onClose, onBookUpdated, onBookDeleted, onBookAdded, onShipmentDeleted, onShipmentUpdated,
 }: {
   shipment: Shipment | null;
   books: Book[];
   isManual: boolean;
+  slotNames: Record<string, string>;
   onClose: () => void;
   onBookUpdated: (b: Book) => void;
   onBookDeleted: (bookId: string) => void;
+  onBookAdded: (b: Book) => void;
   onShipmentDeleted: (shipmentId: string) => void;
   onShipmentUpdated: (s: Shipment) => void;
 }) {
@@ -388,6 +400,7 @@ function ShipmentDrawer({
 
   const [editingShipment, setEditingShipment] = useState(false);
   const [shipmentForm,    setShipmentForm]    = useState({
+    name:        shipment?.name        ?? "",
     orderNumber: shipment?.orderNumber ?? "",
     shipmentNum: shipment?.shipmentNum ?? "",
     date:        shipment?.date ?? "",
@@ -397,6 +410,12 @@ function ShipmentDrawer({
 
   const [delShipmentConfirm, setDelShipmentConfirm] = useState(false);
   const [delShipmentBusy,    setDelShipmentBusy]    = useState(false);
+
+  // Add book to this shipment
+  const [addingBook,    setAddingBook]    = useState(false);
+  const [addBookForm,   setAddBookForm]   = useState({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
+  const [addBookError,  setAddBookError]  = useState("");
+  const [addBookBusy,   setAddBookBusy]   = useState(false);
 
   // Receipt upload per book
   const [receiptUploading, setReceiptUploading] = useState<string | null>(null);
@@ -479,6 +498,35 @@ function ShipmentDrawer({
     setDelShipmentBusy(false);
   }
 
+  async function submitAddBook(e: React.FormEvent) {
+    e.preventDefault();
+    setAddBookError("");
+    const { gameId, gameName, pack, ticketStart, ticketEnd, price } = addBookForm;
+    if (!gameId || !gameName || !pack || !ticketStart || !ticketEnd || !price) {
+      setAddBookError("All fields are required."); return;
+    }
+    setAddBookBusy(true);
+    const res = await fetch("/api/inventory", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        gameId, gameName, pack,
+        ticketStart: Number(ticketStart),
+        ticketEnd:   Number(ticketEnd),
+        price:       Number(price),
+        shipmentId:  shipment?.shipmentId ?? null,
+      }),
+    });
+    if (res.ok) {
+      const { book } = await res.json();
+      onBookAdded(book as Book);
+      setAddBookForm({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
+      setAddingBook(false);
+    } else {
+      setAddBookError((await res.json()).error ?? "Failed to add book.");
+    }
+    setAddBookBusy(false);
+  }
+
   async function uploadReceipt(book: Book, file: File) {
     setReceiptUploading(book.bookId);
     try {
@@ -530,15 +578,30 @@ function ShipmentDrawer({
 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b shrink-0 gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
               <Truck className="size-4 text-primary shrink-0" />
               <p className="font-bold text-base truncate">
-                {isManual ? "Manual Entries" : (shipment?.shipmentNum ? `Shipment ${shipment.shipmentNum}` : "Shipment")}
+                {isManual
+                  ? "Manual Entries"
+                  : (shipment?.name || (shipment?.shipmentNum ? `Shipment ${shipment.shipmentNum}` : "Shipment"))}
               </p>
+              {!isManual && shipment?.source && (
+                <span className={cn(
+                  "text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full shrink-0",
+                  shipment.source === "ai"
+                    ? "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400"
+                    : "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400",
+                )}>
+                  {shipment.source === "ai" ? "AI" : "Manual"}
+                </span>
+              )}
             </div>
             {shipment?.orderNumber && (
               <p className="text-xs text-muted-foreground font-mono mt-0.5">Order #{shipment.orderNumber}</p>
+            )}
+            {shipment?.shipmentNum && shipment.name && (
+              <p className="text-xs text-muted-foreground font-mono mt-0.5">#{shipment.shipmentNum}</p>
             )}
             <p className="text-xs text-muted-foreground mt-0.5">
               {books.length} book{books.length !== 1 ? "s" : ""}
@@ -563,6 +626,7 @@ function ShipmentDrawer({
           <div className="border-b px-5 py-4 space-y-3 bg-muted/20 shrink-0">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Edit Shipment</p>
             {[
+              { key: "name",        label: "Display Name", ph: "e.g. Holiday Restock" },
               { key: "shipmentNum", label: "Shipment #",   ph: "e.g. SH-2024-001" },
               { key: "orderNumber", label: "Order #",       ph: "e.g. 1234567" },
               { key: "date",        label: "Delivery Date", ph: "YYYY-MM-DD" },
@@ -667,10 +731,24 @@ function ShipmentDrawer({
                         ))}
                       </div>
 
-                      {/* Tickets range */}
-                      <p className="text-xs text-muted-foreground">
-                        Tickets #{b.ticketStart} – #{b.ticketEnd} · Slot {b.slot ?? "—"}
-                      </p>
+                      {/* Tickets range + slot */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-xs text-muted-foreground">
+                          Tickets #{b.ticketStart} – #{b.ticketEnd}
+                        </p>
+                        {b.slot != null ? (
+                          <span className="inline-flex items-center gap-1 bg-primary/10 text-primary text-xs font-semibold px-2 py-0.5 rounded-full">
+                            Slot #{b.slot}
+                            {slotNames[String(b.slot)] && (
+                              <span className="text-primary/70 font-normal">— {slotNames[String(b.slot)]}</span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 bg-muted text-muted-foreground text-xs px-2 py-0.5 rounded-full">
+                            No slot assigned
+                          </span>
+                        )}
+                      </div>
 
                       {/* Receipt */}
                       <div className="space-y-2">
@@ -778,6 +856,53 @@ function ShipmentDrawer({
           )}
         </div>
 
+        {/* Add Book */}
+        {!isManual && (
+          <div className="border-t px-5 py-3 shrink-0">
+            {addingBook ? (
+              <form onSubmit={submitAddBook} className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Add Book</p>
+                  <button type="button" onClick={() => { setAddingBook(false); setAddBookError(""); }}
+                    className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-muted transition-colors">
+                    <X className="size-3.5" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { key: "gameId",      label: "Game ID",   ph: "G-4821" },
+                    { key: "gameName",    label: "Game Name", ph: "Gold Rush" },
+                    { key: "pack",        label: "Pack #",    ph: "P-001" },
+                    { key: "price",       label: "Price ($)", ph: "5",   type: "number" },
+                    { key: "ticketStart", label: "Start #",   ph: "1",   type: "number" },
+                    { key: "ticketEnd",   label: "End #",     ph: "300", type: "number" },
+                  ].map(({ key, label, ph, type }) => (
+                    <div key={key}>
+                      <label className="text-[11px] font-medium text-muted-foreground block mb-1">{label}</label>
+                      <input type={type ?? "text"} placeholder={ph}
+                        value={addBookForm[key as keyof typeof addBookForm]}
+                        onChange={(e) => setAddBookForm((f) => ({ ...f, [key]: e.target.value }))}
+                        className="w-full border rounded-lg px-2.5 py-1.5 text-xs bg-background focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                    </div>
+                  ))}
+                </div>
+                {addBookError && <p className="text-xs text-destructive">{addBookError}</p>}
+                <button type="submit" disabled={addBookBusy}
+                  className="w-full bg-primary text-primary-foreground rounded-lg py-2 text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-60 flex items-center justify-center gap-1.5">
+                  {addBookBusy
+                    ? <span className="size-3.5 rounded-full border-2 border-primary-foreground border-t-transparent animate-spin" />
+                    : <><Plus className="size-3.5" /> Add Book to Shipment</>}
+                </button>
+              </form>
+            ) : (
+              <button onClick={() => setAddingBook(true)}
+                className="flex items-center gap-2 text-xs text-primary hover:bg-primary/8 px-3 py-2 rounded-xl transition-colors w-full font-medium">
+                <Plus className="size-3.5" /> Add book to this shipment
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Shipment delete */}
         {!isManual && (
           <div className="border-t px-5 py-3 shrink-0">
@@ -843,13 +968,22 @@ export default function InventoryPage() {
   const [importDone,       setImportDone]       = useState(false);
   const [duplicatePacks,   setDuplicatePacks]   = useState<string[]>([]); // pack numbers duplicated across existing books
 
-  // Manual entry
+  // Manual entry (legacy single-book state, now used within the manual shipment flow)
   const [manualForm, setManualForm] = useState({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
   const [manualError,      setManualError]      = useState("");
   const [manualSubmitting, setManualSubmitting] = useState(false);
 
+  // Manual shipment + books flow
+  const [manualShipmentForm, setManualShipmentForm] = useState({ shipmentNum: "", orderNumber: "", date: "", notes: "" });
+  const [pendingBooks,       setPendingBooks]       = useState<ReviewBook[]>([]);
+  const [manualBookForm,     setManualBookForm]     = useState({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
+  const [manualBookError,    setManualBookError]    = useState("");
+  const [manualSaving,       setManualSaving]       = useState(false);
+  const [manualSaveError,    setManualSaveError]    = useState("");
+
   const [orgRetailerNum, setOrgRetailerNum] = useState("");
   const [orgAddress,     setOrgAddress]     = useState("");
+  const [slotNames,      setSlotNames]      = useState<Record<string, string>>({});
 
   async function load() {
     setLoading(true);
@@ -864,6 +998,7 @@ export default function InventoryPage() {
       const { org } = await settingsRes.json();
       setOrgRetailerNum((org.retailNum as string) ?? "");
       setOrgAddress((org.address as string) ?? "");
+      setSlotNames((org.slotNames as Record<string, string>) ?? {});
     }
     setLoading(false);
   }
@@ -950,9 +1085,15 @@ export default function InventoryPage() {
     setDuplicatePacks([]);
     setManualForm({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
     setManualError("");
+    setManualShipmentForm({ shipmentNum: "", orderNumber: "", date: "", notes: "" });
+    setPendingBooks([]);
+    setManualBookForm({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
+    setManualBookError("");
+    setManualSaveError("");
   }
 
   const PREV_STEP: Partial<Record<Step, Step>> = {
+    manual:             "method",
     delivery:           "method",
     "delivery-result":  "delivery",
     order:              "delivery-result",
@@ -981,7 +1122,7 @@ export default function InventoryPage() {
     setStep(STEP_IDX_TARGET[i]);
   }
 
-  const isModalOpen = step !== "idle" && step !== "method";
+  const isModalOpen = step !== "idle" && step !== "method" && step !== "manual";
   const isWide      = step === "review" || step === "order-result";
 
   // ── Scan helpers ──────────────────────────────────────────────────────────
@@ -1326,6 +1467,7 @@ export default function InventoryPage() {
         date:        deliveryData?.date        as string ?? undefined,
         retailerNum: deliveryData?.retailerNum as string ?? undefined,
         totalBooks:  [...selected].length,
+        source:      "ai",
       }),
     });
     const shipmentId: string | null = shipRes.ok ? (await shipRes.json()).shipment?.shipmentId ?? null : null;
@@ -1381,6 +1523,53 @@ export default function InventoryPage() {
     setManualSubmitting(false);
   }
 
+  function addManualBook(e: React.FormEvent) {
+    e.preventDefault();
+    setManualBookError("");
+    const { gameId, gameName, pack, ticketStart, ticketEnd, price } = manualBookForm;
+    if (!gameId || !gameName || !pack || !ticketStart || !ticketEnd || !price) {
+      setManualBookError("All fields required."); return;
+    }
+    setPendingBooks((prev) => [...prev, {
+      gameId, gameName, pack,
+      ticketStart: Number(ticketStart),
+      ticketEnd:   Number(ticketEnd),
+      price:       Number(price),
+    }]);
+    setManualBookForm({ gameId: "", gameName: "", pack: "", ticketStart: "", ticketEnd: "", price: "" });
+  }
+
+  async function saveManualShipment() {
+    if (pendingBooks.length === 0) { setManualSaveError("Add at least one book."); return; }
+    setManualSaving(true);
+    setManualSaveError("");
+    const sRes = await fetch("/api/shipments", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shipmentNum:  manualShipmentForm.shipmentNum  || undefined,
+        orderNumber:  manualShipmentForm.orderNumber  || undefined,
+        date:         manualShipmentForm.date         || undefined,
+        notes:        manualShipmentForm.notes        || undefined,
+        totalBooks:   pendingBooks.length,
+        source:       "manual",
+      }),
+    });
+    if (!sRes.ok) { setManualSaveError("Failed to create shipment."); setManualSaving(false); return; }
+    const { shipment: newShipment } = await sRes.json() as { shipment: Shipment };
+    const created: Book[] = [];
+    for (const b of pendingBooks) {
+      const bRes = await fetch("/api/inventory", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...b, shipmentId: newShipment.shipmentId }),
+      });
+      if (bRes.ok) { const { book } = await bRes.json(); created.push(book as Book); }
+    }
+    setShipments((prev) => [newShipment, ...prev]);
+    setBooks((prev) => [...created, ...prev]);
+    setManualSaving(false);
+    closeModal();
+  }
+
   const failCount = crossChecks.filter((c) => c.status === "fail").length;
   const warnCount = crossChecks.filter((c) => c.status === "warn").length;
 
@@ -1393,9 +1582,11 @@ export default function InventoryPage() {
           shipment={openShipmentId === "manual" ? null : openShipment}
           books={drawerBooks}
           isManual={openShipmentId === "manual"}
+          slotNames={slotNames}
           onClose={() => setOpenShipmentId(null)}
           onBookUpdated={(b) => setBooks((prev) => prev.map((x) => x.bookId === b.bookId ? b : x))}
           onBookDeleted={(id) => setBooks((prev) => prev.filter((x) => x.bookId !== id))}
+          onBookAdded={(b) => setBooks((prev) => [b, ...prev])}
           onShipmentDeleted={(sid) => {
             setShipments((prev) => prev.filter((s) => s.shipmentId !== sid));
             setBooks((prev) => prev.filter((b) => b.shipmentId !== sid));
@@ -1540,7 +1731,10 @@ export default function InventoryPage() {
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-background border rounded-3xl w-full max-w-sm shadow-2xl p-6 space-y-5">
             <div className="flex items-center justify-between">
-              <h2 className="font-bold text-lg">Add Books</h2>
+              <div>
+                <h2 className="font-bold text-lg">Add to Inventory</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">All books must belong to a shipment.</p>
+              </div>
               <button onClick={closeModal} className="p-2 rounded-xl hover:bg-muted transition-colors text-muted-foreground">
                 <X className="size-5" />
               </button>
@@ -1552,37 +1746,151 @@ export default function InventoryPage() {
                   <Truck className="size-5 text-primary" />
                 </div>
                 <div>
-                  <p className="font-semibold text-sm">Scan Shipment Receipts</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Upload delivery receipt + confirm order — AI extracts all books automatically and creates a shipment record.</p>
+                  <p className="font-semibold text-sm">AI — Scan Receipt</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Upload delivery + order receipts. AI reads every book automatically and creates the shipment.</p>
                 </div>
               </button>
 
-              <div className="pt-1">
-                <p className="text-xs text-center text-muted-foreground mb-3">or add a single book manually</p>
-                <form onSubmit={addManual} className="space-y-2.5">
+              <button onClick={() => { setStep("manual"); setManualSaveError(""); }}
+                className="w-full flex items-start gap-4 border-2 rounded-2xl p-4 hover:border-primary hover:bg-primary/5 transition-all text-left group">
+                <div className="size-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/20 transition-colors">
+                  <PencilSimple className="size-5 text-primary" />
+                </div>
+                <div>
+                  <p className="font-semibold text-sm">Manual Entry</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Enter shipment details yourself and add books one by one. Every book is linked to the shipment you create.</p>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Manual shipment + books flow ── */}
+      {step === "manual" && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-background border rounded-3xl w-full max-w-md shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b shrink-0">
+              <div className="flex items-center gap-2.5">
+                <button onClick={() => { closeModal(); setStep("method"); }}
+                  className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground">
+                  <ArrowLeft className="size-4" />
+                </button>
+                <div>
+                  <h2 className="font-bold text-base">Manual Shipment</h2>
+                  <p className="text-xs text-muted-foreground">Create a shipment and add books to it</p>
+                </div>
+              </div>
+              <button onClick={closeModal} className="p-1.5 rounded-xl hover:bg-muted transition-colors text-muted-foreground">
+                <X className="size-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+              {/* Shipment details */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Shipment Details</p>
+                <div className="grid grid-cols-2 gap-2">
                   {[
-                    { key: "gameId",      label: "Game ID",   ph: "G-4821" },
-                    { key: "gameName",    label: "Game Name", ph: "Gold Rush" },
-                    { key: "pack",        label: "Pack #",    ph: "P-001" },
-                    { key: "ticketStart", label: "Start #",   ph: "1",   type: "number" },
-                    { key: "ticketEnd",   label: "End #",     ph: "300", type: "number" },
-                    { key: "price",       label: "Price ($)", ph: "5",   type: "number" },
-                  ].map(({ key, label, ph, type }) => (
-                    <div key={key} className="flex items-center gap-2">
-                      <label className="text-xs font-medium w-20 shrink-0 text-muted-foreground">{label}</label>
-                      <input type={type ?? "text"} required placeholder={ph}
-                        value={manualForm[key as keyof typeof manualForm]}
-                        onChange={(e) => setManualForm((f) => ({ ...f, [key]: e.target.value }))}
-                        className="flex-1 border rounded-lg px-3 py-1.5 text-xs bg-background focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                    { key: "shipmentNum",  label: "Shipment #", ph: "SH-1001" },
+                    { key: "orderNumber",  label: "Order #",    ph: "ORD-5432" },
+                  ].map(({ key, label, ph }) => (
+                    <div key={key}>
+                      <label className="text-xs text-muted-foreground mb-1 block">{label}</label>
+                      <input type="text" placeholder={ph}
+                        value={manualShipmentForm[key as keyof typeof manualShipmentForm]}
+                        onChange={(e) => setManualShipmentForm((f) => ({ ...f, [key]: e.target.value }))}
+                        className="w-full border rounded-lg px-3 py-1.5 text-xs bg-background focus:outline-none focus:ring-2 focus:ring-primary/30" />
                     </div>
                   ))}
-                  {manualError && <p className="text-xs text-destructive">{manualError}</p>}
-                  <button type="submit" disabled={manualSubmitting}
-                    className="w-full bg-muted hover:bg-muted/80 border rounded-xl py-2 text-sm font-medium transition-colors disabled:opacity-60 flex items-center justify-center gap-2">
-                    {manualSubmitting ? <span className="size-4 rounded-full border-2 border-foreground border-t-transparent animate-spin" /> : "Add Single Book"}
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">Date</label>
+                  <input type="date"
+                    value={manualShipmentForm.date}
+                    onChange={(e) => setManualShipmentForm((f) => ({ ...f, date: e.target.value }))}
+                    className="w-full border rounded-lg px-3 py-1.5 text-xs bg-background focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">Notes (optional)</label>
+                  <input type="text" placeholder="e.g. Holiday restock"
+                    value={manualShipmentForm.notes}
+                    onChange={(e) => setManualShipmentForm((f) => ({ ...f, notes: e.target.value }))}
+                    className="w-full border rounded-lg px-3 py-1.5 text-xs bg-background focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+              </div>
+
+              {/* Add book form */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Add Books</p>
+                <form onSubmit={addManualBook} className="space-y-2 border rounded-2xl p-3 bg-muted/20">
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { key: "gameId",      label: "Game ID",   ph: "G-4821" },
+                      { key: "gameName",    label: "Game Name", ph: "Gold Rush" },
+                      { key: "pack",        label: "Pack #",    ph: "P-001" },
+                      { key: "price",       label: "Price ($)", ph: "5",   type: "number" },
+                      { key: "ticketStart", label: "Start #",   ph: "1",   type: "number" },
+                      { key: "ticketEnd",   label: "End #",     ph: "300", type: "number" },
+                    ].map(({ key, label, ph, type }) => (
+                      <div key={key}>
+                        <label className="text-xs text-muted-foreground mb-1 block">{label}</label>
+                        <input type={type ?? "text"} placeholder={ph}
+                          value={manualBookForm[key as keyof typeof manualBookForm]}
+                          onChange={(e) => setManualBookForm((f) => ({ ...f, [key]: e.target.value }))}
+                          className="w-full border rounded-lg px-2.5 py-1.5 text-xs bg-background focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                      </div>
+                    ))}
+                  </div>
+                  {manualBookError && <p className="text-xs text-destructive">{manualBookError}</p>}
+                  <button type="submit"
+                    className="w-full flex items-center justify-center gap-1.5 border rounded-xl py-2 text-xs font-medium hover:bg-muted transition-colors">
+                    <Plus className="size-3.5" /> Add Book to List
                   </button>
                 </form>
               </div>
+
+              {/* Book list */}
+              {pendingBooks.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+                    Books to Import ({pendingBooks.length})
+                  </p>
+                  <div className="space-y-1.5">
+                    {pendingBooks.map((b, i) => (
+                      <div key={i} className="flex items-center gap-3 border rounded-xl px-3 py-2 bg-background text-xs">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">{b.gameName}</p>
+                          <p className="text-muted-foreground font-mono">
+                            {b.gameId} · Pack {b.pack} · ${b.price} · #{b.ticketStart}–{b.ticketEnd}
+                          </p>
+                        </div>
+                        <button type="button" onClick={() => setPendingBooks((prev) => prev.filter((_, j) => j !== i))}
+                          className="text-muted-foreground hover:text-destructive transition-colors p-1">
+                          <X className="size-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="border-t px-5 py-4 shrink-0 space-y-2">
+              {manualSaveError && <p className="text-xs text-destructive">{manualSaveError}</p>}
+              <button
+                disabled={manualSaving || pendingBooks.length === 0}
+                onClick={saveManualShipment}
+                className="w-full bg-primary text-primary-foreground rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2">
+                {manualSaving
+                  ? <><span className="size-4 rounded-full border-2 border-primary-foreground border-t-transparent animate-spin" /> Saving…</>
+                  : <><Package className="size-4" /> Save Shipment &amp; {pendingBooks.length} Book{pendingBooks.length !== 1 ? "s" : ""}</>}
+              </button>
+              <p className="text-center text-xs text-muted-foreground">
+                {pendingBooks.length === 0 ? "Add at least one book above" : `Creates 1 shipment + ${pendingBooks.length} book${pendingBooks.length !== 1 ? "s" : ""}`}
+              </p>
             </div>
           </div>
         </div>
